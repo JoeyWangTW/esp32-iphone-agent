@@ -194,7 +194,7 @@ import UIKit
     /// The run paused for the board (line) or goes on (nil).
     /// Board status changes go to the debug log (not every identical notify).
     private func logStatus(_ s: BoardStatus) {
-        let line = "board status: ap \(s.ap ?? "-") usb \(s.usb ?? "-") sta \(s.sta.map(String.init) ?? "-")"
+        let line = "board status: ap \(s.ap ?? "-") hid \(s.inputState ?? "-") sta \(s.sta.map(String.init) ?? "-")"
             + " screen \(s.w.map(String.init) ?? "-")x\(s.h.map(String.init) ?? "-") rst \(s.rst ?? "-")"
         guard line != lastStatus else { return }
         lastStatus = line

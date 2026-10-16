@@ -7,13 +7,14 @@ struct MiniPhoneDemo: View {
 
     let kind: Kind
     var ssid = "ESP32Agent-7C3E"
+    var receiverName = "ESP32 Agent"
     @State private var frame = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var frames: [(caption: LocalizedStringKey, finger: CGPoint?)] {
         switch kind {
         case .plugIn:
-            return [("Plug the board into the USB-C port", nil), ("Plug the board into the USB-C port", nil),
+            return [("Power the board and connect over Bluetooth", nil), ("Power the board and connect over Bluetooth", nil),
                     ("Tap Pair when iOS asks", CGPoint(x: 0.68, y: 0.56)),
                     ("No antenna? Keep it right beside your phone", nil)]
         case .wifi:
@@ -22,7 +23,7 @@ struct MiniPhoneDemo: View {
         case .controlCenter:
             return [("Swipe down from the top-right corner", CGPoint(x: 0.85, y: 0.04)),
                     ("Swipe down from the top-right corner", CGPoint(x: 0.85, y: 0.36)),
-                    ("Tap Screen Mirroring", CGPoint(x: 0.3, y: 0.42)), ("Choose “ESP32 Agent”", CGPoint(x: 0.5, y: 0.43))]
+                    ("Tap Screen Mirroring", CGPoint(x: 0.3, y: 0.42)), ("Choose “\(receiverName)”", CGPoint(x: 0.5, y: 0.43))]
         case .assistiveTouch:
             return [("Settings › Accessibility", CGPoint(x: 0.5, y: 0.42)), ("Touch", CGPoint(x: 0.5, y: 0.22)),
                     ("AssistiveTouch", CGPoint(x: 0.5, y: 0.22)), ("Turn AssistiveTouch on", CGPoint(x: 0.84, y: 0.22))]

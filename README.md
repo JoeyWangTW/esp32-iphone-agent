@@ -4,7 +4,7 @@
 
 # ESP32 iPhone Agent
 
-> This branch adds a **voice-assisted ride comparison prototype** for Uber, Lyft, and Waymo. See [setup and limits](docs/ride-comparison.md) and [SenseCAP Watcher bring-up](docs/watcher-bringup.md). Watcher firmware/audio support and live fare validation are still pending.
+> This branch adds a **voice-assisted ride comparison prototype** for Uber, Lyft, and Waymo. See [setup and limits](docs/ride-comparison.md) and [SenseCAP Watcher bring-up](docs/watcher-bringup.md). This branch includes experimental Watcher Bluetooth HID firmware and an iOS companion. Watcher audio/display support and live fare validation are still pending.
 
 **Let an AI model use a real iPhone with a $7 ESP32. Just the phone and the board: no computer, no jailbreak.**
 

@@ -56,6 +56,8 @@ struct DiagnosticsView: View {
                 row("Reset reason", board.status?.rst ?? "–")
                 row("Heap", board.status?.heap.map { "\($0 / 1024) KB" } ?? "–")
                 row("PSRAM", board.status?.psram.map { "\($0 / 1024) KB" } ?? "–")
+                row("Input", board.status?.inputState ?? "–")
+                row("Input transport", board.status?.transport ?? "usb")
                 row("USB", board.status?.usb ?? "–")
                 row("Network", "\(board.status?.net ?? "–") \(board.status?.ip ?? "")")
             }

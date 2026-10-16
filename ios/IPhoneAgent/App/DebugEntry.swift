@@ -69,7 +69,7 @@ extension AppModel {
     /// One line: board, mirroring, calibration, model and run.
     var statusSummary: String {
         let s = board.status
-        let boardText = board.connected ? "connected usb \(s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
+        let boardText = board.connected ? "connected hid \(s?.inputState ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
             : "not connected"
         let mirror = feed.live ? String(format: "live %.2f", feed.aspect) : "off"
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }
@@ -125,13 +125,13 @@ extension AppModel {
         }
     }
 
-    /// Board connected (and USB up), plus mirroring streaming when asked; waits up to `timeout` s.
+    /// Board connected (and HID ready), plus mirroring streaming when asked; waits up to `timeout` s.
     func waitReady(mirroring: Bool, timeout: Double = 30) async -> Bool {
         if MockMode.on { return true }
         let deadline = now() + timeout
         while now() < deadline {
             let s = board.status
-            if board.connected && s?.usb == "ok" && (!mirroring || s?.ap == "streaming") { return true }
+            if board.connected && s?.inputReady == true && (!mirroring || s?.ap == "streaming") { return true }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false

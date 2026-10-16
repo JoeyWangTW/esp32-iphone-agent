@@ -71,3 +71,13 @@ Receiver name `ESP32 Agent`, mirroring only (no audio), H.264 only, resolution/f
 - `net` read in `sta` mode returns the station network's `ssid`/`pass`.
 - `snap` while mirroring has stopped returns the last buffered GOP (check `"ap"` in status); `snap` without
   any video replies `err no video ...`.
+
+## Watcher Bluetooth HID build
+
+`hardware/build-watcher.sh` adds standard HID service `0x1812` alongside the app service.
+It advertises one central connection, encrypted command writes, and keyboard/mouse/consumer
+reports (IDs 1/2/3). No existing command names change. `usb` remains `off` on Watcher;
+new status fields `transport: "ble"` and `hid: "ok" | "off"` describe input readiness.
+Both full and reduced heartbeats contain these fields. USB builds report `transport: "usb"`
+and mirror the existing USB state in `hid`. Updated clients use `hid` when available and
+fall back to `usb` for older firmware. See [Watcher setup](watcher-bringup.md).

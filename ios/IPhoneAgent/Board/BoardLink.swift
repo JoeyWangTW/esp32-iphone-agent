@@ -330,6 +330,7 @@ import Foundation
         connectionDeadline?.cancel()
         connecting = false
         net = nil
+        status = nil  // never reuse input readiness or transport from a previous connection
         let was = connected
         connected = false
         linking = false

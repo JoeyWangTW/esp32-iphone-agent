@@ -50,8 +50,8 @@ Tests cover route/currency/OCR rejection, invalid trip input, stale-result ranki
 
 ## Remaining milestones
 
-1. Establish native USB HID on the Watcher expansion connection (see `watcher-bringup.md`), or use a supported native-USB ESP32-S3 board for the first live trial.
+1. Validate Watcher Bluetooth HID pairing, keyboard/mouse input and reconnect behavior (see `watcher-bringup.md`), then validate simultaneous AirPlay/video/HID.
 2. Run supervised provider trials using a configured model and the user's signed-in apps; capture screen fixtures for extraction tests.
-3. Port board power, display, button, and audio drivers. Back up factory flash before replacing firmware.
+3. Extend the initial Watcher power port with display, button and audio drivers.
 4. Add a versioned BLE audio/result protocol and Watcher microphone capture/display.
 5. Reduce remote image traffic using OCR-led navigation with visual fallback.
