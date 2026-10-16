@@ -21,7 +21,22 @@ void gop_set_config(gop_buf *g, const uint8_t *annexb, size_t len, uint32_t ts) 
 static void restart(gop_buf *g) {
   g->used = 0;
   g->n = 0;
+  g->first = 0;
   g->gen++;
+}
+
+void gop_discard_before(gop_buf *g, uint32_t next) {
+  if (next <= g->first) return;
+  uint32_t count = next - g->first;
+  if (count > (uint32_t)g->n) count = (uint32_t)g->n;
+  if (!count) return;
+  size_t bytes = count == (uint32_t)g->n ? g->used : g->aus[count].off;
+  memmove(g->arena, g->arena + bytes, g->used - bytes);
+  memmove(g->aus, g->aus + count, (g->n - count) * sizeof *g->aus);
+  g->used -= bytes;
+  g->n -= count;
+  g->first += count;
+  for (int i = 0; i < g->n; i++) g->aus[i].off -= bytes;
 }
 
 int gop_push(gop_buf *g, const uint8_t *annexb, size_t len, bool idr, uint32_t ts) {

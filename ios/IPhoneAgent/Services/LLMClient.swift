@@ -48,6 +48,7 @@ struct LLMError: LocalizedError {
     private let extra: [String: Any]
     private(set) var tokenParam: String
     private var auto: Bool
+    private var omitTemperature = false
     private let session: URLSession
 
     init(baseURL: String, model: String, apiKey: String = "", extra: [String: Any] = [:],
@@ -96,6 +97,7 @@ struct LLMError: LocalizedError {
         content.append(["type": "text", "text": text])
         var body: [String: Any] = ["model": model, "temperature": temperature]
         extra.forEach { body[$0.key] = $0.value }
+        if omitTemperature { body.removeValue(forKey: "temperature") }
         body["messages"] = [["role": "system", "content": system], ["role": "user", "content": content]]
         body["stream"] = true
 
@@ -104,10 +106,21 @@ struct LLMError: LocalizedError {
         DebugLog.write("llm → \(model): \(images.count) image(s) \(kb) KB, \(text.count) chars")
         var status = 0, result: ChatResult?, errorText = ""
         do {
-            (status, result, errorText) = try await post(body, maxTokens: maxTokens, started: started)
-            if status == 400 && auto && errorText.contains("max_completion_tokens") {
-                (tokenParam, auto) = ("max_completion_tokens", false)
+            // Some providers reject the token limit first, then reject a custom
+            // temperature. Negotiate each at most once and remember the result.
+            for _ in 0..<3 {
                 (status, result, errorText) = try await post(body, maxTokens: maxTokens, started: started)
+                guard status == 400 else { break }
+                if auto && errorText.contains("max_completion_tokens") {
+                    (tokenParam, auto) = ("max_completion_tokens", false)
+                    continue
+                }
+                if body["temperature"] != nil && Self.rejectsTemperature(errorText) {
+                    omitTemperature = true
+                    body.removeValue(forKey: "temperature")
+                    continue
+                }
+                break
             }
         } catch {
             DebugLog.write(String(format: "llm ✗ %@ after %.1f s: %@", model, now() - started, error.localizedDescription))
@@ -122,6 +135,15 @@ struct LLMError: LocalizedError {
                               result.firstToken.map { String(format: "%.1f s", $0) } ?? "-", result.total, result.text.count)
                        + " " + PyJSON.dumps(.obj(result.diagnostics)))
         return result
+    }
+
+    private static func rejectsTemperature(_ text: String) -> Bool {
+        guard let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any],
+              let error = json["error"] as? [String: Any], error["param"] as? String == "temperature" else { return false }
+        let code = error["code"] as? String ?? ""
+        let message = (error["message"] as? String ?? "").lowercased()
+        return code == "unsupported_parameter" || code == "unsupported_value"
+            || message.contains("does not support") || message.contains("not supported")
     }
 
     /// The first model id from GET {base}/models.

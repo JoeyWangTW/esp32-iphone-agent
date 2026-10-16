@@ -152,7 +152,11 @@ import UIKit
             MainActor.assumeIsolated { self?.metrics.enteredBackground(); DebugLog.write("app: background") }
         }
         center.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.metrics.enteredForeground(); DebugLog.write("app: foreground") }
+            MainActor.assumeIsolated {
+                self?.metrics.enteredForeground()
+                DebugLog.write("app: foreground")
+                self?.board.resumeConnection()
+            }
         }
         if MockMode.on { startMock() }
         runs.reload()

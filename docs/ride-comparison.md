@@ -2,6 +2,16 @@
 
 This branch adds an iPhone **Rides** tab and **Compare Ride Prices** App Intent to the upstream agent. It is a prototype, not a verified live integration with the three providers.
 
+## Current trial: an ordinary saved intent
+
+The first live trial uses the existing Agent and saved-intent flow. A saved task already stores a name, a plain prompt and optional hints. The custom Rides controller below remains experimental and is not required for this trial.
+
+Replace both route placeholders before running this prompt, then save the successful run as an intent using the existing app controls:
+
+> Compare rides from [exact pickup] to [exact destination] now. Open Uber, Lyft and Waymo in turn and use the same pickup and destination in each. Check UberX, standard Lyft and Waymo. Read the displayed fare, currency, pickup wait and trip duration. Report unavailable services and unreadable values rather than guessing. Include the route and any fare ranges or conditions shown, then identify the lowest observed comparable fare. Only inspect quotes: never request, book, reserve, confirm or pay for a ride. Stop if reaching a quote would require one of those actions.
+
+This generic prompt does not enable the custom controller's OCR action guards or structured fare validation. Supervise the trial and verify the displayed route and quotes. Live comparison remains unvalidated.
+
 ## Run it
 
 1. In `ios/Config/Local.xcconfig`, set your development team and a unique bundle identifier, following the example file. Keep model credentials in the app's Settings/Keychain.

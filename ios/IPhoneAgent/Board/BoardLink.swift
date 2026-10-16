@@ -176,7 +176,7 @@ import Foundation
         }
     }
 
-    private func failConnection(_ message: String) {
+    private func failConnection(_ message: String, retry: Bool = false) {
         retryTask?.cancel()
         lastError = message
         log("BLE setup failed: \(message)")
@@ -185,6 +185,32 @@ import Foundation
         setDisconnected()
         stopScan()
         if let previous { central.cancelPeripheralConnection(previous) }
+        if retry { scheduleReconnect() }
+    }
+
+    /// A setup timeout clears `peripheral`, so its subsequent disconnect callback
+    /// is intentionally ignored. Schedule recovery here rather than relying on it.
+    private func scheduleReconnect() {
+        retryTask?.cancel()
+        guard pairedID != nil, !mock else { return }
+        retryTask = Task { [weak self] in
+            guard (try? await Task.sleep(nanoseconds: 2_000_000_000)) != nil else { return }
+            self?.reconnect()
+        }
+    }
+
+    /// Returning from Settings must recover a setup attempt that expired while
+    /// iOS suspended this app; the system's HID connection can still be alive.
+    func resumeConnection() {
+        reconnect()
+    }
+
+    private func startConnectionDeadline() {
+        connectionDeadline?.cancel()
+        connectionDeadline = Task { [weak self] in
+            guard (try? await Task.sleep(nanoseconds: 30_000_000_000)) != nil, let self, !self.connected else { return }
+            self.failConnection(String(localized: "Connection timed out. Keep the board nearby and try again."), retry: true)
+        }
     }
 
     private func reconnect() {
@@ -201,11 +227,7 @@ import Foundation
         name = peripheral.name ?? name
         connecting = true
         log("BLE connecting to \(name)")
-        connectionDeadline?.cancel()
-        connectionDeadline = Task { [weak self] in
-            guard (try? await Task.sleep(nanoseconds: 30_000_000_000)) != nil, let self, !self.connected else { return }
-            self.failConnection(String(localized: "Connection timed out. Keep the board nearby and try again."))
-        }
+        startConnectionDeadline()
         if peripheral.state == .connected {
             connecting = false
             linking = true
@@ -379,6 +401,7 @@ extension BoardLink: CBCentralManagerDelegate {
             connecting = false
             name = p.name ?? name
             linking = true
+            startConnectionDeadline() // service discovery gets a fresh budget after a long reconnect
             log("board connected, discovering")
             p.discoverServices([BoardUUID.service])
         }
@@ -404,11 +427,7 @@ extension BoardLink: CBCentralManagerDelegate {
                                   lastNotify > 0 ? now() - lastNotify : -1, readySince > 0 ? now() - readySince : -1))
             setDisconnected()
             if let error { lastError = error.localizedDescription }
-            retryTask?.cancel()
-            retryTask = Task { [weak self] in
-                guard (try? await Task.sleep(nanoseconds: 2_000_000_000)) != nil else { return }
-                self?.reconnect()
-            }
+            scheduleReconnect()
         }
     }
 }

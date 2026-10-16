@@ -82,7 +82,11 @@ extension ScreenSource {
         }
     }
 
-    var live: Bool { mirroring && frame != nil && (device?.connected ?? false) }
+    // A connected AirPlay session can still have lost its entire decodable GOP.
+    // Do not confuse that failure (or a lost BLE chunk) with an unchanged screen.
+    var live: Bool {
+        mirroring && frame != nil && !broken && metrics?.board?.gop != 0 && (device?.connected ?? false)
+    }
 
     /// Frame width / height (portrait iPhone as a fallback).
     var aspect: Double { size.width > 0 && size.height > 0 ? size.width / size.height : 9 / 19.5 }
@@ -100,7 +104,7 @@ extension ScreenSource {
     }
 
     /// The link (re)connected: chunk numbering starts over.
-    func resetStream() { assembler.reset(); clockOffset = nil }  // the board may have rebooted: its clock too
+    func resetStream() { assembler.reset(); clockOffset = nil; broken = true }  // require a new decoded frame
 
     /// A board timestamp (status `up`, or a streamed unit) just arrived: keep the smallest offset.
     func boardClock(ms: Int) {
@@ -141,8 +145,8 @@ extension ScreenSource {
     @discardableResult
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
         if streamOn && mirroring {
-            if frame != nil && now() - updated < maxAge { return "live" }
-            if await fresh(since: now() - maxAge, timeout: wait) != nil { return "live (waited)" }
+            if live && now() - updated < maxAge { return "live" }
+            if await fresh(since: now() - maxAge, timeout: wait) != nil && live { return "live (waited)" }
         }
         do {
             try await snap()
@@ -191,7 +195,7 @@ extension ScreenSource {
             } else {
                 await settled()
                 if await newer(than: since, timeout: 1.5) { return }
-                guard broken || !streamOn else { return DebugLog.write("frame: none after the action; screen unchanged") }
+                guard !live || !streamOn else { return DebugLog.write("frame: none after the action; screen unchanged") }
                 DebugLog.write("frame: stream stale (waiting for an IDR); snapping")
                 try await snap()
             }
@@ -212,5 +216,5 @@ extension ScreenSource {
     }
 
     /// The link dropped: the board forgets `stream on`.
-    func linkLost() { streamOn = false }
+    func linkLost() { streamOn = false; broken = true }
 }

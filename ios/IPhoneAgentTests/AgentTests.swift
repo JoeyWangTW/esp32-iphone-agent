@@ -3,6 +3,18 @@ import XCTest
 
 /// Port of server/tests/test_agent.py.
 @MainActor final class AgentTests: XCTestCase {
+    func testScreenLostWhileModelThinksPreventsGesture() async {
+        let screen = FakeScreen(), phone = FakeGestures()
+        let model = FakeModel { _ in
+            screen.live = false
+            return "THINK: tap\nDO: tap 500 500"
+        }
+        let agent = AgentLoop(phone: phone, screen: screen, actor: model, planner: model, trace: nil)
+        do { _ = try await agent.step(); XCTFail("Expected lost screen") }
+        catch { XCTAssertTrue(error is DeviceError) }
+        XCTAssertTrue(phone.calls.isEmpty)
+    }
+
     func testPlannerTimeoutRetriesOnceAndChecksGateAgain() async throws {
         let model = TimeoutModel(failures: 1)
         let agent = AgentLoop(phone: nil, screen: FakeScreen(), actor: model, planner: model, trace: nil)

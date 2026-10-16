@@ -3,6 +3,26 @@ import XCTest
 
 /// `video` chunk reassembly (docs/ble-protocol.md).
 final class VideoTests: XCTestCase {
+    @MainActor func testLostGOPAndReconnectInvalidateTheDisplayedFrame() {
+        let feed = VideoFeed(), device = FakeDevice(), metrics = Metrics()
+        feed.device = device
+        feed.metrics = metrics
+        feed.mirroring = true
+        feed.show(Data([1]), width: 10, height: 20)
+        XCTAssertTrue(feed.live) // older boards without GOP telemetry still work
+        metrics.status(BoardStatus(gop: 0))
+        XCTAssertFalse(feed.live) // AirPlay can be connected while its cached GOP is gone
+        metrics.status(BoardStatus(gop: 100))
+        XCTAssertTrue(feed.live)
+        feed.linkLost()
+        feed.resetStream()
+        XCTAssertFalse(feed.live) // reconnect must not revive the old screenshot
+        feed.show(Data([2]), width: 10, height: 20)
+        XCTAssertTrue(feed.live)
+        device.connected = false
+        XCTAssertFalse(feed.live)
+    }
+
     typealias F = VideoAssembler.Flags
 
     func chunk(_ seq: UInt16, _ flags: F, _ payload: [UInt8], ms: UInt32? = nil) -> Data {

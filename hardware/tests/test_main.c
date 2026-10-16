@@ -83,6 +83,31 @@ static void test_bplist_utf16(void) {
   CHECK(bp_get_string(&r, bp_dict_get(&r, top, "name"), s, sizeof s) && !strcmp(s, "H\xE2\x80\x99s"));
 }
 
+static void test_live_gop_reclaims_only_delivered_frames(void) {
+  uint8_t arena[100], au[30];
+  gop_au aus[4];
+  gop_buf g;
+  gop_init(&g, arena, sizeof arena, aus, 4);
+  for (uint32_t frame = 0; frame < 10000; frame++) {
+    memset(au, frame % 251, sizeof au);
+    if (g.used + sizeof au > g.cap || g.n == g.max) {
+      // The simulated consumer is one frame behind: never discard its pending AU.
+      uint32_t pending = frame - 1;
+      gop_discard_before(&g, pending);
+      CHECK(g.first == pending && g.n == 1 && g.used == sizeof au);
+      CHECK(g.aus[0].off == 0 && g.aus[0].ts == pending);
+      for (size_t i = 0; i < sizeof au; i++) CHECK(g.arena[i] == pending % 251);
+    }
+    CHECK(gop_push(&g, au, sizeof au, frame == 0, frame) >= 0);
+    CHECK(g.gen == 1 && !g.wait_idr && g.overflows == 0);
+    CHECK(g.first + (uint32_t)g.n == frame + 1);
+  }
+  gop_discard_before(&g, UINT32_MAX); // clamp to the available delivered prefix
+  CHECK(g.n == 0 && g.used == 0 && g.first == 10000 && !g.wait_idr);
+  CHECK(gop_push(&g, au, sizeof au, false, 10000) == 0 && g.first == 10000);
+  CHECK(gop_push(&g, au, sizeof au, true, 10001) == 0 && g.first == 0 && g.gen == 2);
+}
+
 static void test_gop(void) {
   static uint8_t arena[100];
   static gop_au aus[4];
@@ -149,6 +174,7 @@ int main(void) {
   test_bplist_roundtrip();
   test_bplist_utf16();
   test_gop();
+  test_live_gop_reclaims_only_delivered_frames();
   test_chunker();
   printf(fails ? "%d FAILED\n" : "all tests passed\n", fails);
   return fails != 0;

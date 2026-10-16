@@ -77,7 +77,8 @@ extension AppModel {
         let model = settings.isConfigured ? (settings.currentModel ?? "auto") : "not set"
         let run = agent.running ? "running step \(agent.steps.count)" : "idle"
         return "status: frames \(FrameMode.current.rawValue); board \(boardText); mirroring \(mirror); calibration \(cal) (\(calibrator.phase)); "
-            + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height))"
+            + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height)); "
+            + "video \(s?.fps ?? 0) fps \(s?.kbps ?? 0) kbps gop \(s?.gop ?? 0) bytes"
     }
 
     /// Launch arguments, once at startup.

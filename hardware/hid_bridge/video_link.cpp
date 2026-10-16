@@ -4,8 +4,8 @@
 #include "ble_link.h"
 #include "src/video/gop.h"
 
-// GOP since the latest IDR; overflow drops it until the next IDR. A still screen gets an IDR only every
-// few minutes, so room for ~27 min of AUs at 5 fps (P-frames of a still screen are tiny).
+// Cache since the latest IDR. Live streaming can reclaim delivered frames when
+// full; an unsent overflow still drops the GOP until the next IDR.
 const size_t GOP_CAP = 4 * 1024 * 1024;
 const int MAX_AUS = 8192;
 const size_t SCRATCH_CAP = 512 * 1024;   // largest access unit we forward
@@ -28,6 +28,9 @@ static uint8_t chunk[VCHUNK_HDR + MAX_CHUNK];
 static uint32_t winStart, winBytes, winFrames, lastIdr;
 static volatile uint32_t statKbps, statIdrMs, statAt;
 static volatile float statFps;
+// Updated only after a complete AU has been queued to BLE. The producer may
+// reclaim that prefix while retaining every unsent dependent frame.
+static uint32_t txGen = UINT32_MAX, txNext;
 
 // One access unit as notifies. A failed chunk still consumes its seq, so the app sees a gap.
 static bool sendAu(const uint8_t *p, size_t n, uint8_t flags, uint32_t ts) {
@@ -44,9 +47,10 @@ static bool sendAu(const uint8_t *p, size_t n, uint8_t flags, uint32_t ts) {
 }
 
 // Copies AU i of generation gen into scratch; false if the GOP moved on.
-static bool copyAu(uint32_t gen, int i, gop_au *au) {
+static bool copyAu(uint32_t gen, uint32_t index, gop_au *au) {
   xSemaphoreTake(lock, portMAX_DELAY);
-  bool ok = gop.gen == gen && i < gop.n && gop.aus[i].len <= SCRATCH_CAP;
+  uint32_t i = index - gop.first;
+  bool ok = gop.gen == gen && index >= gop.first && i < (uint32_t)gop.n && gop.aus[i].len <= SCRATCH_CAP;
   if (ok) {
     *au = gop.aus[i];
     memcpy(scratch, gop.arena + au->off, au->len);
@@ -56,9 +60,10 @@ static bool copyAu(uint32_t gen, int i, gop_au *au) {
 }
 
 // Snapshot of the GOP state: generation, AU count, SPS/PPS.
-static bool snapshot(uint32_t *gen, int *n, uint8_t *cfg, size_t *cfg_len, uint32_t *cfg_ts) {
+static bool snapshot(uint32_t *gen, uint32_t *first, int *n, uint8_t *cfg, size_t *cfg_len, uint32_t *cfg_ts) {
   xSemaphoreTake(lock, portMAX_DELAY);
   *gen = gop.gen;
+  *first = gop.first;
   *n = gop.wait_idr ? 0 : gop.n;
   *cfg_len = gop.cfg_len;
   *cfg_ts = gop.cfg_ts;
@@ -71,10 +76,11 @@ static String doSnap() {
   static uint8_t cfg[GOP_CFG_MAX];
   if (!ble_video_room()) return "err video not subscribed";
   for (int attempt = 0; attempt < 3; attempt++) {
-    uint32_t gen, cfg_ts;
+    uint32_t gen, first, cfg_ts;
     size_t cfg_len;
     int n;
-    if (!snapshot(&gen, &n, cfg, &cfg_len, &cfg_ts)) return "err no video (start screen mirroring)";
+    if (!snapshot(&gen, &first, &n, cfg, &cfg_len, &cfg_ts)) return "err no video (restart screen mirroring)";
+    if (first) return "err snapshot history expired (use live video or restart screen mirroring)";
     if (!sendAu(cfg, cfg_len, VF_CONFIG | VF_SNAP, cfg_ts)) return "err ble send failed";
     bool complete = true;
     for (int i = 0; i < n && complete; i++) {
@@ -105,28 +111,39 @@ static String doBench(uint32_t kb) {
   return "ok " + String(millis() - start);
 }
 
-// Continuous mode: send every AU once, catching up from the GOP's IDR when streaming starts (P-frames
-// can't be skipped: each needs the one before, and the next IDR may be minutes away). After a failed
-// send, start over from the GOP's IDR.
+// Continuous mode keeps absolute AU positions so reclaiming already-delivered
+// frames does not interrupt a long GOP. A new decoder still needs a retained IDR.
 static void streamStep() {
-  static uint32_t txGen = UINT32_MAX;
-  static int next;
   static uint8_t cfg[GOP_CFG_MAX];
-  if (!streaming || !ble_video_room()) {
+  if (!ble_video_room()) {
+    xSemaphoreTake(lock, portMAX_DELAY);
     txGen = UINT32_MAX;  // resend config + whole GOP when streaming resumes
+    xSemaphoreGive(lock);
     return;
   }
-  uint32_t gen, cfg_ts;
+  if (!streaming) return; // the same subscribed decoder retains its references while paused
+  uint32_t gen, first, cfg_ts;
   size_t cfg_len;
   int n;
-  if (!snapshot(&gen, &n, cfg, &cfg_len, &cfg_ts)) return;
+  if (!snapshot(&gen, &first, &n, cfg, &cfg_len, &cfg_ts)) return;
   if (gen != txGen) {
+    if (first) return; // cannot decode a truncated GOP without its earlier frames
+    if (!sendAu(cfg, cfg_len, VF_CONFIG, cfg_ts)) return;
+    xSemaphoreTake(lock, portMAX_DELAY);
     txGen = gen;
-    next = 0;
-    if (!sendAu(cfg, cfg_len, VF_CONFIG, cfg_ts)) { txGen = UINT32_MAX; return; }
+    txNext = first;
+    xSemaphoreGive(lock);
   }
-  for (gop_au au; next < n && copyAu(gen, next, &au); next++)
-    if (!sendAu(scratch, au.len, au.idr ? VF_IDR : 0, au.ts)) { txGen = UINT32_MAX; return; }
+  while (streaming && txNext < first + (uint32_t)n) {
+    gop_au au;
+    if (!copyAu(gen, txNext, &au)) break;
+    bool sent = sendAu(scratch, au.len, au.idr ? VF_IDR : 0, au.ts);
+    xSemaphoreTake(lock, portMAX_DELAY);
+    if (sent) txNext++;
+    else txGen = UINT32_MAX;
+    xSemaphoreGive(lock);
+    if (!sent) return;
+  }
 }
 
 static void videoTask(void *) {
@@ -177,6 +194,14 @@ void video_on_au(const uint8_t *au, size_t len, bool idr) {
     winStart = now;
   }
   xSemaphoreTake(lock, portMAX_DELAY);
+  if (!idr && streaming && gop.gen == txGen &&
+      (gop.used + len > gop.cap || gop.n == gop.max)) {
+    size_t before = gop.used;
+    gop_discard_before(&gop, txNext);
+#if DEBUG_SERIAL
+    if (before > gop.used) Serial.printf("video: reclaimed %u bytes, retained %d unsent AUs\n", (unsigned)(before - gop.used), gop.n);
+#endif
+  }
   gop_push(&gop, au, len, idr, now);
   xSemaphoreGive(lock);
   xTaskNotifyGive(task);

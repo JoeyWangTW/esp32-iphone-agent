@@ -89,4 +89,14 @@ Bluetooth bonds. The companion's local signing profile lacks the hotspot
 entitlement, so use its displayed network name/password to join manually if the
 automatic Wi-Fi join fails.
 
-Video streaming concurrency and live ride comparison remain unverified.
+Subsequent live sessions verified simultaneous AirPlay reception, BLE video delivery and HID commands. The iPhone decoded roughly 3–6 fps during a generic navigation/typing run, with no reported BLE chunk drops in the sampled logs. This does not establish completion of that task or a live ride comparison.
+
+### Shared app and video fixes
+
+Long sessions exposed a 4 MiB GOP-cache overflow: AirPlay kept receiving frames while the phone showed an old image. The live sender now reclaims only fully delivered frames, retaining every unsent dependent frame. A new decoder or full snapshot cannot use a truncated GOP; it must wait for another IDR or restart mirroring. An unsent overflow still waits for an IDR. Paused streams can still exhaust the cache.
+
+The app now treats a missing board GOP, decode failure or BLE reconnect as an invalid screen until video is usable again. It also rechecks screen health after the model responds and before sending a gesture. Setup timeouts schedule a new BLE connection attempt, and returning from Settings resumes reconnect attempts.
+
+OpenAI-compatible models that reject a custom temperature are retried without that field. Token-limit and temperature negotiation can happen in either order, with at most three attempts and the accepted settings retained for that client. Other errors retain their original failure behavior. This addresses the observed `gpt-6-luna` HTTP 400 without changing the selected model. OpenAI's [parameter guidance](https://developers.openai.com/api/docs/guides/deployment-checklist) also specifies omitting temperature when reasoning effort is not `none`.
+
+Validation: 98 simulator tests passed, including both negotiation orders, unrelated-error behavior, stale-frame rejection and preventing gestures after video loss. Host C tests exercise 10,000 access units through repeated reclamation under AddressSanitizer/UndefinedBehaviorSanitizer. The full Watcher firmware and signed iPhone build compile and are installed; the application-only firmware write passed hash verification and preserved the Bluetooth bond. The live `gpt-6-luna` image test recovered from two HTTP 400 parameter responses, returned HTTP 200, and correctly answered `Red` in 3.7 seconds. Hardware endurance after reclamation and live ride comparison are still pending.

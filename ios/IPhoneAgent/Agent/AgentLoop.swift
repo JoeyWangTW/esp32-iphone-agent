@@ -270,6 +270,9 @@ extension Pointer: Gestures {}
             }
             if name != "done" && name != "fail" {
                 try await gate?()
+                // The stream may have failed while the model was thinking.
+                // Discard this action; recovery must obtain a new observation and plan.
+                guard screen?.live == true else { throw DeviceError(message: "screen lost before action") }
                 onDoing?(.acting(act))  // the thought (on the first act) names the target
                 let started = now()
                 try await beforePerform?(act, planned.shot)
