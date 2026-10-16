@@ -30,3 +30,13 @@
 #undef CONFIG_BT_NIMBLE_LOG_LEVEL_INFO
 #define CONFIG_BT_NIMBLE_LOG_LEVEL 5
 #define CONFIG_NIMBLE_CPP_LOG_LEVEL 0
+
+#ifndef HID_OVER_BLE
+#define HID_OVER_BLE 0
+#endif
+#ifndef WATCHER_BOARD
+#define WATCHER_BOARD 0
+#endif
+#ifndef HID_TEST_ONLY
+#define HID_TEST_ONLY 0
+#endif

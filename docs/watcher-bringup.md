@@ -1,0 +1,115 @@
+# SenseCAP Watcher Bluetooth HID bring-up
+
+The Watcher can use **Bluetooth mouse and keyboard reports**, alongside the app's existing BLE command/video service. It does not need a native-USB cable to the iPhone. The iOS companion still does screen decoding, OCR, model requests and ride comparison; HID alone cannot read another app's screen or recognize microphone audio.
+
+## Connected hardware (2026-10-16)
+
+- ESP32-S3 revision 0.2, 32 MiB flash, 8 MiB octal PSRAM.
+- USB Dual_Serial bridge: VID `0x1a86`, PID `0x55d2`.
+- The tested ESP32 UART was `/dev/cu.usbmodem5B142658573`; the other UART is for the Himax chip. Port names may change. Identify the ESP32 using `esptool flash-id` before an upload.
+- Secure boot and flash encryption were read as **disabled**. No eFuses were changed.
+- The user explicitly chose to skip the factory backup. Interrupted partial files are not recovery images.
+
+Seeed's [v1.0 schematic](https://github.com/Seeed-Studio/OSHW-SenseCAP-Watcher/blob/main/Hardware/SenseCAP_Watcher_v1.0_SCH.pdf) routes the programming connector through a dual UART bridge. Native ESP32 USB is on expansion pins, but that wiring is unnecessary for this Bluetooth build.
+
+## Firmware profiles
+
+Requires Arduino ESP32 core 3.3.x and NimBLE-Arduino **2.5.1**. Both scripts force-include the required NimBLE buffer configuration.
+
+```sh
+arduino-cli lib install 'NimBLE-Arduino@2.5.1'
+hardware/build-watcher.sh --hid-test  # output: hardware/build-watcher-hid-test
+hardware/build-watcher.sh             # output: hardware/build-watcher
+```
+
+Set `NIMBLE_LIBRARIES=/path/to/library-parent` to use an isolated NimBLE installation. These commands compile only; they do not choose a serial port or flash a device.
+
+Both profiles use UART serial, 32 MiB flash, octal PSRAM and an 8 MiB application partition layout. The remaining flash is not used. They initialize the Watcher's PCA9535 at address `0x21` (SDA 47, SCL 48) and hold system power on P10. The status LCD and battery ADC are powered; audio amplifier, Himax and expansion power remain off. The power wiring follows Seeed's [board support package](https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware/tree/main/components/sensecap-watcher).
+
+The pairing-test profile disables Wi-Fi and AirPlay at startup. The full profile starts the local Wi-Fi AP and AirPlay receiver. Both have the local status screen and wheel-button controls below. Microphone capture, touch and wheel rotation are not implemented.
+
+Do **not** run the upstream auto-selecting `hardware/flash.sh` on Watcher. Use an explicitly verified ESP32 UART. With `ESPTOOL` set to an esptool 5.1 executable and `ESP32_CORE` to the installed Arduino core directory, the pairing-test upload is:
+
+```sh
+"$ESPTOOL" --chip esp32s3 --port "$WATCHER_PORT" --baud 115200 \
+  --before default-reset --after hard-reset write-flash -z \
+  --flash-mode keep --flash-freq keep --flash-size keep \
+  0x0 hardware/build-watcher-hid-test/hid_bridge.ino.bootloader.bin \
+  0x8000 hardware/build-watcher-hid-test/hid_bridge.ino.partitions.bin \
+  0xe000 "$ESP32_CORE/tools/partitions/boot_app0.bin" \
+  0x10000 hardware/build-watcher-hid-test/hid_bridge.ino.bin
+```
+
+This replaces the factory bootloader, partition table and ESP32 application. It does not flash the separate Himax chip. Restoring the factory setup without a verified device backup requires the appropriate Seeed firmware and provisioning process; partial backup files are insufficient.
+
+## Pairing and manual input checks
+
+1. Power Watcher over USB. Its screen shows connection status.
+2. On iPhone, enable **Settings → Accessibility → Touch → AssistiveTouch**. Under **Devices → Bluetooth Devices**, pair **Watcher Agent** followed by its four-character suffix.
+3. Open **ESP32 Agent**, allow Bluetooth and connect to the same Watcher. The app's Mouse indicator becomes ready only when the encrypted keyboard and mouse report subscriptions are active.
+4. For the initial test, use UART at 115200 baud to send `1 ping`. No mouse movements or typing happen automatically at boot or pairing.
+5. With a harmless text field such as a new Notes note focused, send `2 type Watcher test`. With the pointer visible, send `3 move 20 0`, then `4 move -20 0`. Send `5 homescreen` only when intentionally testing Home navigation.
+6. Check disconnect/reconnect and released keys/buttons before enabling screen mirroring or an agent run.
+
+[Apple's AssistiveTouch pointer instructions](https://support.apple.com/en-us/111775) describe Bluetooth pointer pairing.
+
+## Transport behavior
+
+The Watcher advertises standard HID service `0x1812` and the existing app service. One central is allowed: iOS is expected to share its system HID and CoreBluetooth connection. Reports are encrypted and sent only to that central. Commands require an encrypted connection. USB builds keep their existing two-peer debug behavior.
+
+Keyboard, mouse and consumer reports have independent report IDs. Reconnecting sends neutral reports before allowing commands. A failed queued HID notification disconnects the central to avoid leaving a held key/button. Video yields to HID while reports are sent. Notification success means accepted by the BLE host; physical execution still needs visual confirmation.
+
+Status includes `hid` and `transport`; the app falls back to `usb` only for older firmware. The full screen-mirroring/video/HID concurrency path and live fare comparison require supervised device validation.
+
+## Validation recorded on 2026-10-16
+
+The pairing-test firmware was flashed to the connected Watcher; esptool verified the
+written hashes. UART logs confirm the power latch, NimBLE-Arduino 2.5.1 startup and
+an `ok` response to `ping`. The iOS companion was signed with the user's existing
+Apple development team and installed/launched on the connected iPhone.
+
+The full Watcher build and the original USB build compile locally with Arduino
+ESP32 3.3.7 and NimBLE 2.5.1. Host tests validate keyboard/mouse/consumer report sizes,
+signed relative axes, and the original bplist/video code. The user confirmed iPhone pairing and that `Watcher test` appeared in Notes. UART
+confirmed an encrypted/bonded reconnect, all three HID subscriptions, and the iOS
+app's command/status/video subscriptions on the same connection. The test exposed
+and fixed a connection-handle lookup bug (NimBLE peer indices are not handles).
+The user observed the small pointer after toggling AssistiveTouch's **Perform Touch
+Gestures**, then confirmed leftward movement to the top-left edge and movement
+back into view using three `move 100 100` commands. Keyboard typing and relative
+pointer movement are visually confirmed. This observation does not establish that
+the gesture toggle is required on every iPhone. Clicks and coordinate calibration
+remain unverified.
+
+After input verification, the full profile was rebuilt and installed by writing
+only the application at `0x10000`; esptool verified its hash. Startup logs show
+successful `_airplay` and `_raop` registration for **Watcher Agent**, about 105 KB
+free internal heap, and about 3.37 MB free PSRAM. The firmware preserves NVS and
+Bluetooth bonds. The companion's local signing profile lacks the hotspot
+entitlement, so use its displayed network name/password to join manually if the
+automatic Wi-Fi join fails.
+
+Subsequent live sessions verified simultaneous AirPlay reception, BLE video delivery and HID commands. The iPhone decoded roughly 3–6 fps during a generic navigation/typing run, with no reported BLE chunk drops in the sampled logs. This does not establish completion of that task or a live ride comparison.
+
+### Shared app and video fixes
+
+Long sessions exposed a 4 MiB GOP-cache overflow: AirPlay kept receiving frames while the phone showed an old image. The live sender now reclaims only fully delivered frames, retaining every unsent dependent frame. A new decoder or full snapshot cannot use a truncated GOP; it must wait for another IDR or restart mirroring. An unsent overflow still waits for an IDR. Paused streams can still exhaust the cache.
+
+The app now treats a missing board GOP, decode failure or BLE reconnect as an invalid screen until video is usable again. It also rechecks screen health after the model responds and before sending a gesture. Setup timeouts schedule a new BLE connection attempt, and returning from Settings resumes reconnect attempts.
+
+OpenAI-compatible models that reject a custom temperature are retried without that field. Token-limit and temperature negotiation can happen in either order, with at most three attempts and the accepted settings retained for that client. Other errors retain their original failure behavior. This addresses the observed `gpt-6-luna` HTTP 400 without changing the selected model. OpenAI's [parameter guidance](https://developers.openai.com/api/docs/guides/deployment-checklist) also specifies omitting temperature when reasoning effort is not `none`.
+
+Validation: 98 simulator tests passed, including both negotiation orders, unrelated-error behavior, stale-frame rejection and preventing gestures after video loss. Host C tests exercise 10,000 access units through repeated reclamation under AddressSanitizer/UndefinedBehaviorSanitizer. The full Watcher firmware and signed iPhone build compile and are installed; the application-only firmware write passed hash verification and preserved the Bluetooth bond. The live `gpt-6-luna` image test recovered from two HTTP 400 parameter responses, returned HTTP 200, and correctly answered `Red` in 3.7 seconds. A live stream reclaimed 4,132,262 bytes and continued decoding at 2.5 fps with frame age 0.1 seconds and no reported drops immediately afterward. Live ride comparison remains unvalidated.
+
+## Local screen and power controls
+
+- Screen: Bluetooth HID readiness, Wi-Fi peer presence, receipt of decodable mirrored data, board suffix and USB/battery power. Battery voltage is approximate; no calibrated percentage is claimed. Mirror reception does not prove that the phone app is decoding or running a task.
+- LED: amber means HID is not ready, blue means HID is ready but Wi-Fi/mirroring is incomplete, green means the board is receiving a buffered mirror stream, red means a long press is armed.
+- Short wheel press: toggle the LCD backlight. Connections and the status LED remain active.
+- Hold the wheel for at least three seconds: display the power action; release to execute. Startup presses and input failures cannot trigger shutdown. HID buttons are released and the companion receives its existing stop command before sleep.
+- USB connected: enter deep-sleep standby with LCD and LED off. Press the wheel to wake; restart iPhone Screen Mirroring afterward. Charger-only interrupts return to sleep. USB power prevents a true hardware shutdown, as described in Seeed's [operation guide](https://wiki.seeedstudio.com/watcher_operation_guideline/).
+- Battery: release the system power latch. Hold the wheel for approximately three seconds to power on, or connect USB. Battery shutdown/wake still needs physical validation.
+
+The 412×412 SPD2010 screen uses Espressif's vendored Apache-2.0 driver over QSPI, a PSRAM framebuffer and a small internal DMA stripe. It refreshes once per second on the bridge loop. Display failures leave the radio bridge available with an LED fallback. The `watcher` diagnostic command reports LCD, backlight, power source and button state without sending phone input.
+
+Host tests cover startup holds, bounce, single/long presses, release-only execution, I2C-loss recovery, timer wrap and framebuffer bounds. The full Watcher, pairing-test and original USB builds pass using NimBLE 2.5.1. The full image is installed with its write hash verified; UART reports LCD ready, USB power and bonded HID/app reconnect, with about 90 KB internal heap and 3 MB PSRAM free at boot. The user verified screen readability, short-press screen off/on, and USB standby/wake. UART confirms the standby request, subsequent boot and bonded HID/app reconnect. Battery shutdown still requires an unplugged physical check.

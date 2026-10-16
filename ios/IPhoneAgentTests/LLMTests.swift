@@ -163,6 +163,45 @@ final class StubProtocol: URLProtocol {
         XCTAssertEqual(StubProtocol.seen.count, 1)
     }
 
+    func testNegotiatesTokenLimitAndDefaultTemperatureThenRemembersBoth() async throws {
+        for temperatureFirst in [false, true] {
+            let llm = client("default-temperature-model")
+            StubProtocol.seen = []
+            StubProtocol.respond = { body in
+                let temperatureError = (400, "application/json", #"{"error":{"param":"temperature","code":"unsupported_value","message":"Only the default temperature is supported."}}"#)
+                if temperatureFirst && body["temperature"] != nil { return temperatureError }
+                if body["max_completion_tokens"] == nil {
+                    return (400, "application/json", #"{"error":{"param":"max_tokens","message":"Use max_completion_tokens instead."}}"#)
+                }
+                if body["temperature"] != nil { return temperatureError }
+                return (200, "application/json", #"{"choices":[{"message":{"content":"Red"}}]}"#)
+            }
+            let reply = try await llm.chat(system: "test", text: "test")
+            XCTAssertEqual(reply.text, "Red")
+            _ = try await llm.chat(system: "test", text: "again")
+            XCTAssertEqual(StubProtocol.seen.count, 4)
+            XCTAssertNil(StubProtocol.seen.last?["temperature"])
+            XCTAssertNil(StubProtocol.seen.last?["max_tokens"])
+            XCTAssertEqual(StubProtocol.seen.last?["max_completion_tokens"] as? Int, 600)
+        }
+    }
+
+    func testDoesNotRetryUnrelatedOrInvalidTemperatureErrors() async {
+        for response in [
+            #"{"error":{"param":"messages","code":"unsupported_value","message":"Unsupported value in message mentioning temperature"}}"#,
+            #"{"error":{"param":"temperature","code":"invalid_value","message":"Value out of range"}}"#
+        ] {
+            StubProtocol.seen = []
+            StubProtocol.respond = { _ in (400, "application/json", response) }
+            do {
+                _ = try await client("test").chat(system: "test", text: "test")
+                XCTFail("Expected original error")
+            } catch {
+                XCTAssertEqual(StubProtocol.seen.count, 1)
+            }
+        }
+    }
+
     func testExtraBodyAndImageAreSent() async throws {
         let llm = client("gpt", extra: ["reasoning_effort": "none"])
         fakeServer(wants: "max_tokens")

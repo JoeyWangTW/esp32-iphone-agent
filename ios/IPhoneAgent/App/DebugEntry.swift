@@ -69,15 +69,17 @@ extension AppModel {
     /// One line: board, mirroring, calibration, model and run.
     var statusSummary: String {
         let s = board.status
-        let boardText = board.connected ? "connected usb \(s?.usb ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
+        let boardText = board.connected ? "connected hid \(s?.inputState ?? "-") ap \(s?.ap ?? "-") sta \(s?.sta.map(String.init) ?? "-")"
             : "not connected"
         let mirror = feed.live ? String(format: "live %.2f", feed.aspect) : "off"
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }
             ?? "none"
         let model = settings.isConfigured ? (settings.currentModel ?? "auto") : "not set"
-        let run = agent.running ? "running step \(agent.steps.count)" : "idle"
+        let checkpoint = agent.execution.currentIndex.map { "; checkpoint \($0 + 1)/\(agent.execution.checkpoints.count) \(agent.execution.checkpoints[$0].goal)" } ?? ""
+        let run = agent.running ? "running step \(agent.steps.count)\(checkpoint)" : "idle"
         return "status: frames \(FrameMode.current.rawValue); board \(boardText); mirroring \(mirror); calibration \(cal) (\(calibrator.phase)); "
-            + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height))"
+            + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height)); "
+            + "video \(s?.fps ?? 0) fps \(s?.kbps ?? 0) kbps gop \(s?.gop ?? 0) bytes"
     }
 
     /// Launch arguments, once at startup.
@@ -87,6 +89,7 @@ extension AppModel {
             return args[i + 1]
         }
         #if DEBUG
+        if args.contains("-rides") { tab = .rides }
         if let requested = value(after: "-setup"),
            let page = ["connect": SetupPage.connect, "brain": .brain][requested] { setupPage = page }
         if args.contains("-test-model") { Task { await pingLLM() } }
@@ -124,13 +127,13 @@ extension AppModel {
         }
     }
 
-    /// Board connected (and USB up), plus mirroring streaming when asked; waits up to `timeout` s.
+    /// Board connected (and HID ready), plus mirroring streaming when asked; waits up to `timeout` s.
     func waitReady(mirroring: Bool, timeout: Double = 30) async -> Bool {
         if MockMode.on { return true }
         let deadline = now() + timeout
         while now() < deadline {
             let s = board.status
-            if board.connected && s?.usb == "ok" && (!mirroring || s?.ap == "streaming") { return true }
+            if board.connected && s?.inputReady == true && (!mirroring || s?.ap == "streaming") { return true }
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         return false

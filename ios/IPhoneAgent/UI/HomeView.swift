@@ -149,7 +149,7 @@ struct HomeView: View {
         case .failure: return "That did not work out. The replay shows where I got stuck."
         default: break
         }
-        if !board.connected { return "Plug me into the USB-C port to wake me up." }
+        if !board.connected { return "Power the board and connect it over Bluetooth." }
         if blocker != nil { return "Almost there. Tap an orange item to finish setup." }
         return "Hi, I'm \(settings.agentName). Tell me what to do on this iPhone."
     }
@@ -183,6 +183,18 @@ struct HomeView: View {
                 }
             }
             .padding(.vertical, Space.xs)
+            if !agent.execution.checkpoints.isEmpty {
+                DisclosureGroup("Plan and progress") {
+                    ForEach(Array(agent.execution.checkpoints.enumerated()), id: \.offset) { i, checkpoint in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(checkpoint.goal, systemImage: checkpoint.status == "done" ? "checkmark.circle.fill"
+                                  : checkpoint.status == "blocked" ? "exclamationmark.circle" : i == agent.execution.currentIndex ? "arrow.right.circle.fill" : "circle")
+                            Text(checkpoint.evidence.isEmpty ? checkpoint.verify : checkpoint.evidence)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
         } header: {
             Text(agent.running ? "Now" : "Last run")
         }

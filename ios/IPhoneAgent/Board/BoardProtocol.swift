@@ -23,6 +23,10 @@ struct BoardStatus: Codable, Equatable {
     var heap: Int?
     var psram: Int?
     var usb: String?   // ok | asleep | off
+    var hid: String?   // ok | asleep | off; absent on older USB firmware
+    var transport: String? // usb | ble
+    var inputState: String? { hid ?? (transport == "ble" ? nil : usb) }
+    var inputReady: Bool { inputState == "ok" }
     var net: String?   // ap | sta | none
     var ip: String?
     var sta: Int?
@@ -38,6 +42,7 @@ struct BoardStatus: Codable, Equatable {
     func merged(with n: BoardStatus) -> BoardStatus {
         var m = n
         m.up = n.up ?? up; m.rst = n.rst ?? rst; m.heap = n.heap ?? heap; m.psram = n.psram ?? psram
+        m.hid = n.hid ?? hid; m.transport = n.transport ?? transport
         m.usb = n.usb ?? usb; m.net = n.net ?? net; m.ip = n.ip ?? ip; m.sta = n.sta ?? sta; m.ap = n.ap ?? ap
         m.w = n.w ?? w; m.h = n.h ?? h; m.kbps = n.kbps ?? kbps; m.fps = n.fps ?? fps; m.idr = n.idr ?? idr
         m.gop = n.gop ?? gop

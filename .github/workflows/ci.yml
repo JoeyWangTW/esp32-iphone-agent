@@ -31,7 +31,11 @@ jobs:
           arduino-cli lib install "NimBLE-Arduino@2.5.1"
       - name: Build
         run: hardware/flash.sh --build-only
-      - name: Host tests (bplist, GOP buffer)
+      - name: Build Watcher (Bluetooth HID)
+        run: hardware/build-watcher.sh
+      - name: Build Watcher pairing test
+        run: hardware/build-watcher.sh --hid-test
+      - name: Host tests (bplist, GOP buffer, HID descriptors)
         run: make -C hardware/tests
 
   server:  # legacy v0.1.0 architecture, kept working

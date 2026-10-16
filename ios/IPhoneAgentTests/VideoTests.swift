@@ -3,6 +3,62 @@ import XCTest
 
 /// `video` chunk reassembly (docs/ble-protocol.md).
 final class VideoTests: XCTestCase {
+    @MainActor func testConsecutiveTasksKeepStreamingAndDecoderFrame() async throws {
+        let feed = VideoFeed(), device = FakeDevice()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([1]), width: 10, height: 20)
+        try await feed.stream(true)
+        try await feed.finishUse(mode: .stream)
+        XCTAssertTrue(feed.streamOn)
+        XCTAssertTrue(feed.live)
+        let source = try await feed.currentFrame(maxAge: 0, wait: 0)
+        XCTAssertEqual(source, "live (unchanged screen)")
+        try await feed.stream(true)
+        try await feed.finishUse(mode: .stream)
+        XCTAssertEqual(device.sent, ["stream on", "stream on"])
+        XCTAssertFalse(device.sent.contains("snap"))
+    }
+
+    @MainActor func testBrokenLiveStreamDoesNotRequestExpiredSnapshot() async throws {
+        let feed = VideoFeed(), device = FakeDevice()
+        feed.device = device; feed.mirroring = true
+        feed.show(Data([1]), width: 10, height: 20)
+        try await feed.stream(true)
+        feed.resetStream()
+        do { _ = try await feed.currentFrame(maxAge: 0, wait: 0); XCTFail("Broken decoder must not return old frame") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("no decodable live frame")) }
+        XCTAssertEqual(device.sent, ["stream on"])
+    }
+
+    @MainActor func testExplicitSnapshotModeStillStopsStreaming() async throws {
+        let feed = VideoFeed(), device = FakeDevice()
+        feed.device = device
+        try await feed.stream(true)
+        try await feed.finishUse(mode: .snap)
+        XCTAssertFalse(feed.streamOn)
+        XCTAssertEqual(device.sent, ["stream on", "stream off"])
+    }
+
+    @MainActor func testLostGOPAndReconnectInvalidateTheDisplayedFrame() {
+        let feed = VideoFeed(), device = FakeDevice(), metrics = Metrics()
+        feed.device = device
+        feed.metrics = metrics
+        feed.mirroring = true
+        feed.show(Data([1]), width: 10, height: 20)
+        XCTAssertTrue(feed.live) // older boards without GOP telemetry still work
+        metrics.status(BoardStatus(gop: 0))
+        XCTAssertFalse(feed.live) // AirPlay can be connected while its cached GOP is gone
+        metrics.status(BoardStatus(gop: 100))
+        XCTAssertTrue(feed.live)
+        feed.linkLost()
+        feed.resetStream()
+        XCTAssertFalse(feed.live) // reconnect must not revive the old screenshot
+        feed.show(Data([2]), width: 10, height: 20)
+        XCTAssertTrue(feed.live)
+        device.connected = false
+        XCTAssertFalse(feed.live)
+    }
+
     typealias F = VideoAssembler.Flags
 
     func chunk(_ seq: UInt16, _ flags: F, _ payload: [UInt8], ms: UInt32? = nil) -> Data {

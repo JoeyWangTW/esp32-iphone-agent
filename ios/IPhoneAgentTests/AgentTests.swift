@@ -3,6 +3,130 @@ import XCTest
 
 /// Port of server/tests/test_agent.py.
 @MainActor final class AgentTests: XCTestCase {
+    func testFactsSurviveHistoryWindowReplanAndReconnect() async throws {
+        let actor = FakeModel { n in n == 1 ? """
+            THINK: Lyft quote is visible; Waymo remains.
+            MEMORY: {"key":"Lyft","value":"Standard to test destination: USD 8.95","status":"done"}
+            MEMORY: {"key":"Waymo","value":"Check same destination","status":"pending"}
+            DO: home
+            """ : "THINK: Continue to Waymo\nDO: wait" }
+        let planner = FakeModel { _ in "1. Continue with Waymo; Lyft is already checked." }
+        let screen = FakeScreen()
+        let agent = AgentLoop(phone: FakeGestures(), screen: screen, actor: actor, planner: planner, trace: nil)
+        _ = try await agent.nextActions()
+        for i in 0..<12 {
+            agent.steps.append(["action": .str("tap"), "x": .int(i), "y": .int(i)])
+        }
+        _ = try await agent.nextActions()
+        XCTAssertTrue(actor.prompts.last!.contains("USD 8.95"))
+        XCTAssertTrue(actor.prompts.last!.contains("\"status\":\"done\""))
+        XCTAssertTrue(actor.prompts.last!.contains("\"status\":\"pending\""))
+        screen.live = false
+        let reconnect = Task { @MainActor in
+            try await Task.sleep(for: .milliseconds(10))
+            screen.live = true
+        }
+        try await agent.replan(stuck: true)
+        try await reconnect.value
+        XCTAssertTrue(planner.prompts.last!.contains("USD 8.95"))
+        XCTAssertTrue(planner.prompts.last!.contains("connection was lost and restored"))
+        XCTAssertEqual(agent.memory.notes.count, 2)
+    }
+
+    func testObservationSurvivesRejectedRepeatedActionAndGestureFailure() async throws {
+        let actor = FakeModel { n in n == 1 ? """
+            THINK: Result is visible.
+            MEMORY: {"key":"result","value":"Observed quote USD 8.95","status":"done"}
+            DO: home
+            """ : "THINK: Different move\nDO: tap 100 200" }
+        let agent = AgentLoop(phone: FakeGestures(), screen: FakeScreen(), actor: actor, planner: actor, trace: nil)
+        agent.steps = [["action": .str("home"), "changed": .bool(false)]]
+        agent.beforePerform = { _, _ in throw DeviceError(message: "disconnected") }
+        do { _ = try await agent.step(); XCTFail("Expected gesture failure") } catch {}
+        XCTAssertEqual(actor.prompts.count, 2)
+        XCTAssertTrue(actor.prompts[1].contains("USD 8.95"))
+        XCTAssertEqual(agent.memory.notes.first?.status, "done")
+    }
+
+    func testInvalidMemoryRetriesWithoutGestureOrPartialCommit() async throws {
+        let actor = FakeModel { n in n == 1 ? """
+            MEMORY: {"key":"valid","value":"Should not partially commit","status":"done"}
+            MEMORY: {"key":"broken","value":"bad","status":"maybe"}
+            DO: tap 500 500
+            """ : "THINK: Stop\nDO: done unavailable" }
+        let phone = FakeGestures()
+        let agent = AgentLoop(phone: phone, screen: FakeScreen(), actor: actor, planner: actor, trace: nil)
+        let done = try await agent.step()
+        XCTAssertTrue(done)
+        XCTAssertTrue(phone.calls.isEmpty)
+        XCTAssertTrue(agent.memory.notes.isEmpty)
+        XCTAssertTrue(actor.prompts[1].contains("Reply format error"))
+    }
+
+    func testMemoryResetsWhenClearedAndAtNewRun() async throws {
+        let model = FakeModel { _ in "MEMORY: {\"key\":\"quote\",\"value\":\"old fare\",\"status\":\"done\"}\nDO: done ok" }
+        let agent = AgentLoop(phone: nil, screen: FakeScreen(), actor: model, planner: model, trace: nil)
+        _ = try await agent.nextActions()
+        XCTAssertFalse(agent.memory.notes.isEmpty)
+        try agent.clear()
+        XCTAssertTrue(agent.memory.notes.isEmpty)
+        _ = try await agent.nextActions()
+        try agent.start("New task")
+        XCTAssertTrue(agent.memory.notes.isEmpty)
+        agent.stop()
+        while agent.running { await Task.yield() }
+        XCTAssertTrue(agent.memory.notes.isEmpty)
+    }
+
+    func testMemoryCorrectionsBoundsAndProvenance() throws {
+        let date = Date(timeIntervalSince1970: 100)
+        let first = try RunMemory().updating(from: "MEMORY: {\"key\":\"Quote\",\"value\":\"Unknown\",\"status\":\"pending\"}", observedAt: date)
+        let next = try first.updating(from: "MEMORY: {\"key\":\" quote \",\"value\":\"USD 9.50\",\"status\":\"done\"}", observedAt: date.addingTimeInterval(10))
+        XCTAssertEqual(next.notes.count, 1)
+        XCTAssertEqual(next.notes[0].value, "USD 9.50")
+        XCTAssertEqual(next.notes[0].observedAt, date.addingTimeInterval(10))
+        XCTAssertThrowsError(try next.updating(from: "MEMORY: invalid json", observedAt: date))
+        XCTAssertEqual(try next.updating(from: "THINK: Continue\nDO: wait", observedAt: date).notes, next.notes)
+        XCTAssertThrowsError(try next.updating(from: "MEMORY: {\"key\":\"x\",\"value\":\"\(String(repeating: "x", count: 401))\",\"status\":\"done\"}", observedAt: date))
+        var full = RunMemory()
+        for i in 0..<32 {
+            full = try full.updating(from: "MEMORY: {\"key\":\"\(i)\",\"value\":\"value\",\"status\":\"observed\"}", observedAt: date)
+        }
+        XCTAssertThrowsError(try full.updating(from: "MEMORY: {\"key\":\"extra\",\"value\":\"value\",\"status\":\"observed\"}", observedAt: date))
+        XCTAssertEqual(full.notes.count, 32)
+    }
+
+    func testMemoryIsArchivedWithSourceWithoutBecomingAGesture() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let trace = TraceStore(root: folder)
+        trace.start(task: "Read result")
+        let model = FakeModel { _ in "MEMORY: {\"key\":\"result\",\"value\":\"USD 8.95\",\"status\":\"done\"}\nDO: done USD 8.95" }
+        let phone = FakeGestures()
+        let agent = AgentLoop(phone: phone, screen: FakeScreen(), actor: model, planner: model, trace: trace)
+        _ = try await agent.step()
+        let text = try String(contentsOf: trace.dir!.appendingPathComponent("steps.jsonl"), encoding: .utf8)
+        let records = try text.split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
+        XCTAssertEqual(records.compactMap { $0["kind"] as? String }, ["task", "llm", "memory", "step"])
+        XCTAssertNotNil(records[1]["frame"])
+        XCTAssertTrue((records[2]["notes"] as? String)?.contains("USD 8.95") == true)
+        XCTAssertEqual(RunStore.load(trace.dir!)?.steps.count, 1)
+        XCTAssertTrue(phone.calls.isEmpty)
+        XCTAssertEqual(model.prompts.count, 1)
+    }
+
+    func testScreenLostWhileModelThinksPreventsGesture() async {
+        let screen = FakeScreen(), phone = FakeGestures()
+        let model = FakeModel { _ in
+            screen.live = false
+            return "THINK: tap\nDO: tap 500 500"
+        }
+        let agent = AgentLoop(phone: phone, screen: screen, actor: model, planner: model, trace: nil)
+        do { _ = try await agent.step(); XCTFail("Expected lost screen") }
+        catch { XCTAssertTrue(error is DeviceError) }
+        XCTAssertTrue(phone.calls.isEmpty)
+    }
+
     func testPlannerTimeoutRetriesOnceAndChecksGateAgain() async throws {
         let model = TimeoutModel(failures: 1)
         let agent = AgentLoop(phone: nil, screen: FakeScreen(), actor: model, planner: model, trace: nil)
@@ -237,6 +361,6 @@ import XCTest
     func chat(system: String, text: String, image: Data?, maxTokens: Int, temperature: Double) async throws -> ChatResult {
         onProgress?(.waiting)
         onProgress?(.receiving)
-        return ChatResult(text: "THINK: Wait for the screen\nDO: wait", total: 0)
+        return ChatResult(text: text.contains("Initial task plan:") ? "1. Observe the screen" : "THINK: Wait for the screen\nDO: wait", total: 0)
     }
 }

@@ -25,6 +25,7 @@ extension Pointer: Gestures {}
 @MainActor final class AgentLoop: ObservableObject {
     struct Planned {
         var act: JObject
+        var capturedAt: Date? = nil
         var shot: Data?  // every action of one reply is drawn on the same screenshot
     }
 
@@ -37,16 +38,24 @@ extension Pointer: Gestures {}
 
     @Published private(set) var task = ""
     @Published private(set) var plan = ""
+    @Published private(set) var memory = RunMemory()
+    @Published private(set) var execution = ExecutionPlan()
+    private var checkpointActions = 0
+    private var checkpointRepairUsed = false
+    private var recoveryStrategy = ""
     @Published var steps: [JObject] = []
     @Published private(set) var shots: [Int: Data] = [:]  // step index -> screenshot the model decided on
+    private(set) var shotDates: [Int: Date] = [:]
     @Published private(set) var running = false
     private var pointerAt = CGPoint.zero  // last pointer position (screen fractions)
     /// When the last gesture ended: the model never decides on a frame from before it.
     private(set) var lastActed = 0.0
     /// Awaited before every look and every gesture (the app holds the run while its own UI is in front).
     var gate: (() async throws -> Void)?
-    static let maxTokens = ["planner": 1500, "actor": 1000]
+    static let maxTokens = ["planner": 2500, "actor": 1000]
     private var job: Task<Void, Never>?
+    /// Optional task-specific guard; guarded tasks use one action per fresh model observation.
+    var beforePerform: ((JObject, Data?) async throws -> Void)?
     var onFinish: (() -> Void)?
     /// Paused for the board to come back (a line for the UI), or nil when going on.
     /// Recovery from a lost link: the link state (from the app), each stage as it changes (nil = live again),
@@ -67,7 +76,7 @@ extension Pointer: Gestures {}
     enum HelpChoice { case resume, skip, stop }
 
     init(phone: Gestures?, screen: ScreenSource?, actor: ChatModel?, planner: ChatModel?, trace: TraceStore?,
-         maxSteps: Int = 40, maxFailures: Int = 3) {
+         maxSteps: Int = 100, maxFailures: Int = 3) {
         self.phone = phone; self.screen = screen; self.actor = actor; self.planner = planner
         self.trace = trace; self.maxSteps = maxSteps; self.maxFailures = maxFailures
     }
@@ -76,7 +85,9 @@ extension Pointer: Gestures {}
     func start(_ task: String, traceStarted: Bool = false) throws {
         if running { throw DeviceError(message: "agent already running") }
         guard screen?.live == true else { throw DeviceError(message: "no phone screen: start Screen Mirroring first") }
-        self.task = task; plan = ""; steps = []; shots = [:]
+        self.task = task; plan = ""; steps = []; shots = [:]; shotDates = [:]
+        memory = RunMemory()
+        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
         pointerAt = .zero
         lastActed = 0
         helpAsked = 0
@@ -95,11 +106,13 @@ extension Pointer: Gestures {}
 
     func clear() throws {
         if running { throw DeviceError(message: "stop the agent first") }
-        task = ""; plan = ""; steps = []; shots = [:]
+        task = ""; plan = ""; steps = []; shots = [:]; shotDates = [:]
+        memory = RunMemory()
+        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
     }
 
-    private func record(_ shot: Data? = nil, _ step: JObject) {
-        if let shot { shots[steps.count] = shot }
+    private func record(_ shot: Data? = nil, _ step: JObject, capturedAt: Date? = nil) {
+        if let shot { shots[steps.count] = shot; shotDates[steps.count] = capturedAt ?? Date() }
         steps.append(JObject([("t", .num(now())), ("shot", .bool(shot != nil))]).merging(step))
         trace?.write(kind: "step", step)
         onStep?()
@@ -135,7 +148,7 @@ extension Pointer: Gestures {}
     }
 
     private func ask(_ role: String, _ llm: ChatModel, _ system: String, _ prompt: String,
-                     temperature: Double = 0, retryTimeout: Bool = true) async throws -> (String, Double, Data?) {
+                     temperature: Double = 0, retryTimeout: Bool = true) async throws -> (String, Double, Data?, Date) {
         try await gate?()
         var prompt = prompt
         if let lost = try await waitForScreen() {
@@ -145,6 +158,7 @@ extension Pointer: Gestures {}
         }
         guard let screen, screen.live else { throw BlindError() }  // never let the model act blind
         let frame = screen.frame, started = now()
+        let capturedAt = Date().addingTimeInterval(-max(0, started - screen.capturedAt))
         onDoing?(retryTimeout ? .waiting : .retrying)
         let reporting = llm as? ModelProgressReporting
         reporting?.onProgress = { [weak self] progress in
@@ -173,7 +187,7 @@ extension Pointer: Gestures {}
         if let first = reply.firstToken { rec["first_token_s"] = .num((first * 100).rounded() / 100) }
         if lastActed > 0 { rec["frame_after_action_s"] = .num(((screen.capturedAt - lastActed) * 100).rounded() / 100) }
         trace?.write(frame, kind: "llm", rec.merging(reply.diagnostics))
-        return (reply.text, seconds, frame)
+        return (reply.text, seconds, frame, capturedAt)
     }
 
     func run() async {
@@ -230,7 +244,9 @@ extension Pointer: Gestures {}
             record(nil, ["action": .str("takeover"), "reason": .str("the user did this part by hand: \(reason)")])
         case .skip:
             record(nil, ["action": .str("skipped"), "reason": .str("the user asked to skip this step: \(reason)")])
+            if execution.current != nil { try execution.advance(evidence: "User requested skipping: " + reason, blocked: true) }
         }
+        checkpointActions = 0; checkpointRepairUsed = false
         await screen?.settled()
         try await replan(stuck: true)
         return true
@@ -238,7 +254,7 @@ extension Pointer: Gestures {}
 
     /// The actor's system prompt: the original, plus an intent's checklist as hints.
     var actorPrompt: String {
-        let base = Prompts.actor + "\n" + AssistiveTouchSpots.rule
+        let base = Prompts.actor + "\n" + AssistiveTouchSpots.rule + "\n" + RunMemory.actorRules + "\n" + ExecutionPlan.actingRules
         return hints.isEmpty ? base : base + "\n\nHints for this task:\n" + hints.map { "- " + $0 }.joined(separator: "\n")
     }
 
@@ -248,6 +264,14 @@ extension Pointer: Gestures {}
 
     /// One see-think-act round (one or more actions). Returns true when the task is over.
     func step() async throws -> Bool {
+        if execution.current != nil && checkpointActions >= 12 {
+            record(nil, ["action": .str("fail"), "reason": .str("No verified checkpoint after 12 actions: \(execution.current!.goal)")])
+            return true
+        }
+        if execution.current != nil && checkpointActions >= 6 && !checkpointRepairUsed {
+            checkpointRepairUsed = true
+            try await replan(stuck: true)
+        }
         var timing = Metrics.Step()
         let acts = try await nextActions()
         timing.llmMs = (acts[0].act["think_s"]?.double ?? 0) * 1000
@@ -258,15 +282,29 @@ extension Pointer: Gestures {}
         for (i, planned) in acts.enumerated() {
             var act = planned.act
             let name = act["action"]?.str ?? ""
+            if name == "checkpoint" || name == "blocked" {
+                let title = execution.current?.goal ?? ""
+                try execution.advance(evidence: act["evidence"]?.str ?? "", blocked: name == "blocked")
+                act["checkpoint_goal"] = .str(title)
+                checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
+                record(planned.shot, act, capturedAt: planned.capturedAt)
+                return false
+            }
             if name == "replan" || stuck {
-                record(planned.shot, act)
+                record(planned.shot, act, capturedAt: planned.capturedAt)
                 try await replan(stuck: stuck)
                 return false
             }
             if name != "done" && name != "fail" {
                 try await gate?()
+                // The stream may have failed while the model was thinking.
+                // Discard this action; recovery must obtain a new observation and plan.
+                guard screen?.live == true else { throw DeviceError(message: "screen lost before action") }
                 onDoing?(.acting(act))  // the thought (on the first act) names the target
                 let started = now()
+                try await beforePerform?(act, planned.shot)
+                try Task.checkCancellation()
+                checkpointActions += 1
                 try await perform(act)
                 lastActed = now()
                 let s = lastActed - started
@@ -275,7 +313,10 @@ extension Pointer: Gestures {}
                 spots += pointerPath(act)
                 pointerAt = spots.last!
             }
-            record(planned.shot, act)
+            if name == "done", execution.current != nil {
+                try execution.advance(evidence: act["answer"]?.str ?? "")
+            }
+            record(planned.shot, act, capturedAt: planned.capturedAt)
             if name == "done" || name == "fail" { return true }
             let following = i < acts.count - 1 ? acts[i + 1].act["action"]?.str : nil
             if name == "tap" && (following == "type" || following == "key") {  // a missed tap never opened the field
@@ -318,11 +359,30 @@ extension Pointer: Gestures {}
             prompt += "\n\nThe previous plan got stuck (last event: \(pyStr(last["action"])) \(last["reason"]?.str ?? "")):"
                 + "\n\(plan)\nLook at the current screen and plan from here, another way if needed."
         }
-        let (reply, seconds, frame) = try await ask("planner", planner, Prompts.plannerApp + "\n" + AssistiveTouchSpots.rule, prompt)
-        let (en, zh) = Actions.parsePlan(reply)
-        plan = en
-        record(frame, ["action": .str(stuck ? "replan (stuck)" : "plan"), "plan": .str(en), "plan_zh": .str(zh),
-                       "think_s": .num(seconds)])
+        let initial = execution.checkpoints.isEmpty
+        prompt += memory.context + execution.context
+        prompt += initial ? "\n\nInitial task plan: create ordered checkpoints."
+            : "\n\nRepair ONLY the active checkpoint. Do not replace or restart the checkpoint ledger. Give a short strategy from the current screen; describe what failed and a different approach."
+        let rules = initial ? "Return the checkpoint JSON only." : "Return plain-text recovery guidance for the active checkpoint only."
+        for attempt in 0..<2 {
+            let (reply, seconds, frame, capturedAt) = try await ask("planner", planner,
+                (initial ? ExecutionPlan.planningRules + "\n" + Prompts.appRules : Prompts.plannerApp)
+                    + "\n" + AssistiveTouchSpots.rule + "\n" + RunMemory.rules + "\n" + rules, prompt)
+            try Task.checkCancellation()
+            let (en, zh) = Actions.parsePlan(reply)
+            if initial {
+                do { execution = try ExecutionPlan.parse(en) }
+                catch {
+                    guard attempt == 0 else { throw error }
+                    prompt += "\n\nInvalid plan format: \(error.localizedDescription). Return the required JSON; no action has run."
+                    continue
+                }
+                plan = execution.checkpoints.enumerated().map { "\($0.offset + 1). \($0.element.goal)" }.joined(separator: "\n")
+            } else { plan = en; recoveryStrategy = en }
+            record(frame, ["action": .str(stuck ? "replan (stuck)" : "plan"), "plan": .str(plan), "plan_zh": .str(zh),
+                           "think_s": .num(seconds)], capturedAt: capturedAt)
+            return
+        }
     }
 
     func nextActions() async throws -> [Planned] {
@@ -334,20 +394,49 @@ extension Pointer: Gestures {}
                 : s["changed"] == .bool(false) ? " -> screen did NOT change" : ""
             return String(PyJSON.dumps(s.without(hidden)).prefix(300)) + effect
         }.joined(separator: "\n")
-        var prompt = "Goal: \(task)\n\nPlan:\n\(plan)\n\nRecent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?"
+        var feedback = ""
         var reply = ""
         for attempt in 0..<3 {  // retry unparseable replies, a little less deterministically
-            let (text, seconds, frame) = try await ask("actor", actor, actorPrompt, prompt, temperature: 0.4 * Double(attempt))
+            let prompt = "Overall goal (context, not a request to restart): \(task)\n\nCurrent recovery guidance:\n\(recoveryStrategy.isEmpty ? "(none)" : recoveryStrategy)" + memory.context + execution.context
+                + "\n\nRecent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?" + feedback
+            let (text, seconds, frame, capturedAt) = try await ask("actor", actor, actorPrompt, prompt, temperature: 0.4 * Double(attempt))
+            try Task.checkCancellation()
             reply = text
             var acts: [JObject]
-            do { acts = try Actions.parseActions(text) } catch { continue }
+            do {
+                acts = try Actions.parseActions(text)
+                if !execution.checkpoints.isEmpty {
+                    guard acts.count == 1 else { throw Actions.ParseError(message: "Use exactly one DO action while executing checkpoints") }
+                    let name = acts[0]["action"]?.str
+                    if name == "done", let i = execution.currentIndex, i != execution.checkpoints.count - 1 {
+                        throw Actions.ParseError(message: "Finish the active checkpoint and remaining sources before DO done")
+                    }
+                    if name == "done", execution.current != nil {
+                        var validation = execution
+                        try validation.advance(evidence: acts[0]["answer"]?.str ?? "")
+                    }
+                }
+                if ["checkpoint", "blocked"].contains(acts[0]["action"]?.str ?? "") {
+                    var validation = execution
+                    try validation.advance(evidence: acts[0]["evidence"]?.str ?? "", blocked: acts[0]["action"]?.str == "blocked")
+                }
+                let updated = try memory.updating(from: text, observedAt: capturedAt)
+                if updated.notes != memory.notes {
+                    memory = updated
+                    // The immediately preceding llm record contains the source screenshot and full reply.
+                    trace?.write(kind: "memory", ["notes": .str(memory.json)])
+                }
+            } catch {
+                feedback = "\n\nReply format error: \(error.localizedDescription). Correct the format; no action was executed."
+                continue
+            }
             if missed, let last = steps.last, Actions.key(acts[0]) == Actions.key(last) {  // same move that did nothing
-                prompt += "\n\nYou just proposed \(PyJSON.dumps(Actions.key(acts[0]))) again, but it changed nothing last "
+                feedback = "\n\nYou just proposed \(PyJSON.dumps(Actions.key(acts[0]))) again, but it changed nothing last "
                     + "time. Choose a different action (another position, a shorter swipe, or another way)."
                 continue
             }
             acts[0]["think_s"] = .num(seconds)
-            return acts.map { Planned(act: $0, shot: frame) }
+            return (beforePerform == nil ? acts : Array(acts.prefix(1))).map { Planned(act: $0, capturedAt: capturedAt, shot: frame) }
         }
         throw Actions.ParseError(message: "actor gave no valid action: \(reply.prefix(200))")
     }

@@ -11,7 +11,8 @@ extension AppModel {
     var runID: String { traces.dir?.lastPathComponent ?? "" }
 
     /// Start a task (or a saved intent: its checklist goes to the actor as hints).
-    func run(_ task: String, intent: SavedTask? = nil) async {
+    func run(_ task: String, intent: SavedTask? = nil, rideTask: Bool = false) async {
+        guard rideTask || (rideJob == nil && !rides.running) else { return }
         guard !startingAgent, !agent.running, !recorder.recording else { return }
         startingAgent = true
         defer { startingAgent = false }
@@ -21,6 +22,7 @@ extension AppModel {
         departing = true
         try? await Task.sleep(nanoseconds: 800_000_000)  // "See you later" (DepartureOverlay)
         departing = false
+        guard !Task.isCancelled else { return }
         await startAgent(task)
     }
 
@@ -76,6 +78,7 @@ extension AppModel {
                 mark(changed ? "screen changed and settled" : "no screen change seen in 3 s; settled")
             }
             mark("first frame: " + (try await feed.currentFrame()))
+            try Task.checkCancellation()
             try agent.start(task, traceStarted: true)
             mark("agent started")
             say("started: \(task)")
@@ -93,12 +96,13 @@ extension AppModel {
             runMood = .failure
             notifier.post(.failed, title: String(localized: "Could not start"),
                           body: error.localizedDescription, run: runID)
-            openReview(run: runID)
+            if !rides.running { openReview(run: runID) }
         }
     }
 
     /// Emergency stop: cancel the agent and release the mouse button.
     func stopAgent() async {
+        rideJob?.cancel()
         answerHelp(.stop)
         mockJob?.cancel()
         agent.stop()
@@ -169,6 +173,7 @@ extension AppModel {
         runs.reload()
         let summary = String(localized: "\(moveCount) steps · \(seconds.durationText)")
         switch outcome {
+        case _ where rides.running: break
         case .done:
             Haptics.success()
             let answer = last?["answer"]?.str ?? agent.task
@@ -181,7 +186,7 @@ extension AppModel {
         if let intent = currentIntent {
             intents.record(intent.id, RunStat(run: runID, ok: outcome == .done, seconds: seconds))
         }
-        if outcome != .stopped || UIApplication.shared.applicationState == .active { openReview(run: runID) }
+        if !rides.running && (outcome != .stopped || UIApplication.shared.applicationState == .active) { openReview(run: runID) }
         moodReset?.cancel()
         moodReset = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 5_000_000_000)
@@ -193,7 +198,7 @@ extension AppModel {
     func agentFinished() {
         ended()
         if let last = agent.steps.last { say("finished: \(last["action"]?.str ?? "") \(last["reason"]?.str ?? last["answer"]?.str ?? "")") }
-        Task { try? await feed.stream(false) }
+        Task { try? await feed.finishUse() }
         endBackgroundTask()
     }
 

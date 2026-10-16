@@ -17,6 +17,8 @@ enum StepText {
         case "back": return String(localized: "Go back")
         case "wait": return String(localized: "Wait")
         case "done": return String(localized: "Done")
+        case "checkpoint": return "Checkpoint completed"
+        case "blocked": return "Source unavailable"
         case "fail": return String(localized: "Gave up")
         case "stopped": return String(localized: "Stopped")
         case "hiccup": return String(localized: "Hiccup, retrying")
@@ -33,7 +35,7 @@ enum StepText {
     /// The model's own words if it gave any, else the action.
     static func line(_ s: JObject) -> String {
         if let t = s["thought"]?.str, !t.isEmpty { return t }
-        if let a = s["answer"]?.str ?? s["reason"]?.str, !a.isEmpty { return "\(title(s)): \(a)" }
+        if let a = s["answer"]?.str ?? s["reason"]?.str ?? s["evidence"]?.str, !a.isEmpty { return "\(title(s)): \(a)" }
         return title(s)
     }
 
@@ -47,7 +49,7 @@ enum StepText {
         case "home": return "house"
         case "back": return "chevron.backward"
         case "wait": return "hourglass"
-        case "done": return "checkmark.circle.fill"
+        case "done", "checkpoint": return "checkmark.circle.fill"
         case "stopped": return "stop.circle"
         case "help", "takeover": return "hand.raised"
         case "skipped": return "forward"
@@ -58,7 +60,7 @@ enum StepText {
     }
 
     static let notMoves: Set<String> = ["plan", "replan (stuck)", "hiccup", "stopped", "error", "fail", "done", "help",
-                                        "takeover", "skipped", "note", "reconnected"]
+                                        "takeover", "skipped", "note", "reconnected", "checkpoint", "blocked"]
 }
 
 /// How a run ended.

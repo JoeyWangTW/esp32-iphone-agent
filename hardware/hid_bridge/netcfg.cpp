@@ -132,6 +132,9 @@ void net_begin() {
   staPass = WIFI_PASS;
 #endif
   if (mode == "sta" && staSsid.isEmpty()) mode = "ap";
+#if HID_TEST_ONLY
+  mode = "off"; // RAM only: do not overwrite the saved Wi-Fi configuration.
+#endif
   startWifi();
   net_coex("balance");
 }

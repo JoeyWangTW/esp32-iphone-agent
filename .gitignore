@@ -22,3 +22,13 @@ hardware/hid_bridge/build/
 hardware/tests/test
 hardware/tests/test.dSYM/
 hardware/tools/out/
+
+# Local device backups and tooling (may contain provisioning secrets)
+.local/
+hardware/build-watcher/
+hardware/build-watcher-hid-test/
+ios/build-device*/
+hardware/tests/hid_descriptor_test
+hardware/tests/hid_descriptor_test.dSYM/
+hardware/tests/watcher_test
+hardware/tests/watcher_test.dSYM/

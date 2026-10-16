@@ -46,8 +46,8 @@ import UIKit
 
     var busy: Bool { phase.step != nil }
 
-    /// The mouse is up (board connected, USB HID mounted).
-    var boardReady: Bool { app.board.connected && app.board.status?.usb == "ok" }
+    /// The mouse is up (board connected, USB or Bluetooth HID ready).
+    var boardReady: Bool { app.board.connected && app.board.status?.inputReady == true }
     var mirroring: Bool { app.board.status?.ap == "streaming" }
 
     /// Calibration is due: never done, the screen shape changed, or the learned correction drifted.
@@ -138,7 +138,7 @@ import UIKit
         }
         do {
             try await app.feed.stream(true)
-            defer { if !app.agent.running { Task { try? await app.feed.stream(false) } } }
+            defer { if !app.agent.running { Task { try? await app.feed.finishUse() } } }
             let ok = try await app.pointer.startCalibration { [weak self] i in
                 self?.phase = [.homing, .probeA, .probeB][min(i, 2)]
             }

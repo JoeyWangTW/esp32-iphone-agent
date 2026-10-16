@@ -12,6 +12,7 @@
 #include <NimBLEDevice.h>
 #include "nimble/nimble/host/include/host/ble_hs.h"
 #include "netcfg.h"
+#include "ble_hid.h"
 
 static_assert(MYNEWT_VAL(MSYS_1_BLOCK_COUNT) == 64 && MYNEWT_VAL(MSYS_1_BLOCK_SIZE) == 320,
               "nimble_cfg.h not applied: build with hardware/flash.sh");
@@ -30,7 +31,8 @@ const int VIDEO_CTRL_PKTS = 8;             // ACL packets video may have in the 
 const uint32_t CMD_ACTIVE_MS = 1000;       // ... i.e. for this long after a `cmd` write; otherwise all of them
 const int MBUF_DATA = MYNEWT_VAL(MSYS_1_BLOCK_SIZE) - 16;  // payload per block (16 B mbuf header)
 // Up to MAX_PEERS centrals at once: the phone's app, plus a Mac as a debug harness.
-const int MAX_PEERS = 2;
+// BLE HID uses one central: iOS shares its HID and CoreBluetooth connection.
+const int MAX_PEERS = HID_OVER_BLE ? 1 : 2;
 
 enum { CH_REPLY, CH_STATUS, CH_VIDEO, CH_COUNT };
 
@@ -46,7 +48,7 @@ static SemaphoreHandle_t statusLock;
 static Text statusText;
 static bool statusDirty;
 static std::atomic<int> ctrlPending;  // replies queued or sending + a status waiting; video yields to them
-static volatile int peers[MAX_PEERS] = {-1, -1};
+static volatile int peers[2] = {-1, -1};
 static volatile bool subscribed[MAX_PEERS][CH_COUNT];
 static uint32_t winStart, winBytes;  // touched by the video task only
 static volatile uint32_t kbps;
@@ -115,6 +117,10 @@ class ServerCb : public NimBLEServerCallbacks {
     if (peerCount() < MAX_PEERS) NimBLEDevice::startAdvertising();  // room for the debug harness
   }
   void onDisconnect(NimBLEServer *s, NimBLEConnInfo &ci, int reason) override {
+#if HID_OVER_BLE
+    ble_hid_disconnected(ci.getConnHandle());
+    xQueueReset(cmdQueue);  // never replay a gesture queued by the disconnected host
+#endif
     int i = slotOf(ci.getConnHandle());
     if (i >= 0) {
       for (int c = 0; c < CH_COUNT; c++) subscribed[i][c] = false;
@@ -133,6 +139,9 @@ class ServerCb : public NimBLEServerCallbacks {
 
 class CharCb : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &ci) override {
+#if HID_OVER_BLE
+    if (!ci.isEncrypted() || slotOf(ci.getConnHandle()) < 0) return;
+#endif
     const NimBLEAttValue &raw = c->getValue();
     String v(raw.c_str(), raw.length());
     if (c == netChar) { net_request(v); return; }
@@ -266,7 +275,8 @@ void ble_begin(const String &name) {
   server = NimBLEDevice::createServer();
   server->setCallbacks(new ServerCb());
   NimBLEService *svc = server->createService(UUID("0000"));
-  NimBLECharacteristic *cmd = svc->createCharacteristic(UUID("0001"), NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  NimBLECharacteristic *cmd = svc->createCharacteristic(UUID("0001"), NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR |
+      (HID_OVER_BLE ? NIMBLE_PROPERTY::WRITE_ENC : 0));
   chars[CH_REPLY] = svc->createCharacteristic(UUID("0002"), NIMBLE_PROPERTY::NOTIFY);
   chars[CH_STATUS] = svc->createCharacteristic(UUID("0003"), NIMBLE_PROPERTY::NOTIFY | NIMBLE_PROPERTY::READ);
   chars[CH_VIDEO] = svc->createCharacteristic(UUID("0004"), NIMBLE_PROPERTY::NOTIFY);
@@ -275,12 +285,19 @@ void ble_begin(const String &name) {
   cmd->setCallbacks(&charCb);
   netChar->setCallbacks(&charCb);
   for (auto *c : chars) c->setCallbacks(&charCb);
+#if HID_OVER_BLE
+  ble_hid_begin(server);
+#endif
   server->start();
 
   NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
   NimBLEAdvertisementData data, scan;
   data.setFlags(BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP);
   data.setCompleteServices(NimBLEUUID(UUID("0000")));
+#if HID_OVER_BLE
+  data.addServiceUUID(NimBLEUUID(uint16_t(0x1812)));
+  data.setAppearance(0x03c0);  // generic HID, keyboard + mouse
+#endif
   scan.setName(name.c_str());
   adv->setAdvertisementData(data);
   adv->setScanResponseData(scan);
@@ -371,3 +388,25 @@ void ble_unpair() {
     if (peers[i] >= 0) { server->disconnect(peers[i]); any = true; }  // onDisconnect restarts advertising
   if (!any) NimBLEDevice::startAdvertising();
 }
+
+#if HID_OVER_BLE
+// HID gets the same reserved buffers and video priority as command replies.
+// Use the host API so buffer exhaustion is observable, never silently reported as success.
+bool ble_hid_send(NimBLECharacteristic *report, uint16_t handle, const uint8_t *data, size_t size) {
+  ctrlPending++;
+  lastCmdMs = millis();
+  uint32_t started = millis();
+  bool ok = false;
+  while (slotOf(handle) >= 0 && server->getPeerInfoByHandle(handle).isEncrypted()) {
+    os_mbuf *buf = ble_hs_mbuf_from_flat(data, size);
+    int rc = buf ? ble_gatts_notify_custom(handle, report->getHandle(), buf) : BLE_HS_ENOMEM;
+    if (rc == 0) { ok = true; break; }
+    if (rc != BLE_HS_ENOMEM || millis() - started >= 200) break;
+    vTaskDelay(1);
+  }
+  ctrlPending--;
+  // A lost release report must not leave keys/buttons held on the phone.
+  if (!ok) server->disconnect(handle);
+  return ok;
+}
+#endif

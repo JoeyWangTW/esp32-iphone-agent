@@ -15,6 +15,8 @@
 #include "USBHIDConsumerControl.h"
 #include "tusb.h"
 #include "ble_link.h"
+#include "ble_hid.h"
+#include "watcher_board.h"
 #include "netcfg.h"
 #include "video_link.h"
 #include "src/airplay/airplay.h"
@@ -28,9 +30,15 @@ const int HOME_REPORTS = 50;
 
 const int WATCHDOG_MS = 8000;  // a hung loop (e.g. blocked USB) reboots the board instead of staying offline
 
+#if HID_OVER_BLE
+BleMouse mouse;
+BleKeyboard keyboard;
+BleConsumer consumer;
+#else
 USBHIDMouse mouse;
 USBHIDKeyboard keyboard;
 USBHIDConsumerControl consumer;
+#endif
 const uint16_t AC_HOME = 0x0223;  // HID consumer page: AC Home
 static String receiverName = "ESP32 Agent";
 
@@ -38,6 +46,9 @@ void movePaced(long dx, long dy) {
   while (dx || dy) {
     int sx = constrain(dx, -STEP, STEP), sy = constrain(dy, -STEP, STEP);
     mouse.move(sx, sy);
+#if HID_OVER_BLE
+    if (!ble_hid_command_ok()) return;
+#endif
     dx -= sx;
     dy -= sy;
     delay(STEP_MS);
@@ -76,14 +87,18 @@ bool pressCombo(String combo) {
 // A locked or sleeping phone suspends USB; sending HID reports then can stall. Ask it to wake up instead,
 // and report "asleep" right away if it does not, so the board never hangs.
 bool usbReady() {
+#if HID_OVER_BLE
+  return ble_hid_ready();
+#else
   if (tud_suspended()) {
     tud_remote_wakeup();
     for (int i = 0; i < 50 && tud_suspended(); i++) delay(10);
   }
   return tud_mounted() && !tud_suspended();
+#endif
 }
 
-String run(const String &line) {
+String runImpl(const String &line) {
   int sp = line.indexOf(' ');
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String arg = sp < 0 ? "" : line.substring(sp + 1);
@@ -91,9 +106,14 @@ String run(const String &line) {
   sscanf(arg.c_str(), "%ld %ld", &a, &b);
 
   if (cmd == "ping") return "ok";
-  if (!usbReady()) return "err phone usb asleep (unlock the phone)";
+  if (!usbReady()) return HID_OVER_BLE ? "err Bluetooth HID not ready (pair in AssistiveTouch)" : "err phone usb asleep (unlock the phone)";
   if (cmd == "home") {  // slam the pointer into the top-left corner
-    for (int i = 0; i < HOME_REPORTS; i++) { mouse.move(-127, -127); delay(2); }
+    for (int i = 0; i < HOME_REPORTS; i++) {
+      mouse.move(-127, -127); delay(STEP_MS);
+#if HID_OVER_BLE
+      if (!ble_hid_command_ok()) break;
+#endif
+    }
     return "ok";
   }
   if (cmd == "move") { movePaced(a, b); return "ok"; }
@@ -105,6 +125,17 @@ String run(const String &line) {
   if (cmd == "key") return pressCombo(arg) ? "ok" : "err unknown key";
   if (cmd == "homescreen") { consumer.press(AC_HOME); delay(40); consumer.release(); return "ok"; }
   return "err unknown command";
+}
+
+String run(const String &line) {
+#if HID_OVER_BLE
+  ble_hid_command_begin();
+#endif
+  String result = runImpl(line);
+#if HID_OVER_BLE
+  if (result == "ok" && !ble_hid_command_ok()) return "err HID report failed";
+#endif
+  return result;
 }
 
 const char *resetReason() {
@@ -120,8 +151,19 @@ const char *resetReason() {
 }
 
 const char *usbState() {
+#if HID_OVER_BLE
+  return "off"; // USB is a programming/power connection, never the iPhone input transport.
+#else
   if (!tud_mounted()) return "off";
   return tud_suspended() ? "asleep" : "ok";
+#endif
+}
+const char *hidState() {
+#if HID_OVER_BLE
+  return ble_hid_ready() ? "ok" : "off";
+#else
+  return usbState();
+#endif
 }
 
 // Board-level commands from the app; everything else is an HID command for run().
@@ -129,6 +171,9 @@ String board(const String &line, const String &id) {
   int sp = line.indexOf(' ');
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String arg = sp < 0 ? "" : line.substring(sp + 1);
+#if WATCHER_BOARD
+  if (cmd == "watcher") return watcher_status();
+#endif
   long a = 0, b = 0;
   int n = sscanf(arg.c_str(), "%ld %ld", &a, &b);
   if (cmd == "stream") {
@@ -173,20 +218,20 @@ String board(const String &line, const String &id) {
 String statusJson(bool full) {
   static const char *apStates[] = {"idle", "connected", "streaming"};
   VideoStats v = video_stats();
-  char s[384];
+  char s[448];
   snprintf(s, sizeof s,
-           "{\"up\":%lu,\"rst\":\"%s\",\"heap\":%u,\"psram\":%u,\"usb\":\"%s\",\"net\":\"%s\",\"ip\":\"%s\",\"sta\":%d,"
+           "{\"up\":%lu,\"rst\":\"%s\",\"heap\":%u,\"psram\":%u,\"usb\":\"%s\",\"hid\":\"%s\",\"transport\":\"%s\",\"net\":\"%s\",\"ip\":\"%s\",\"sta\":%d,"
            "\"ap\":\"%s\",\"w\":%u,\"h\":%u,\"kbps\":%lu,\"fps\":%.1f,\"idr\":%lu,\"gop\":%lu,"
            "\"ble\":{\"mtu\":%u,\"phy\":%u,\"kbps\":%lu,\"drop\":%lu,\"rdrop\":%lu,\"n\":%d}}",
            millis(), resetReason(), (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), usbState(), net_mode(), net_ip().c_str(), net_peers(),
+           (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM), usbState(), hidState(), HID_OVER_BLE ? "ble" : "usb", net_mode(), net_ip().c_str(), net_peers(),
            apStates[airplay_state()], cfg_width(), cfg_height(), (unsigned long)v.kbps, v.fps, (unsigned long)v.idr_ms,
            (unsigned long)v.gop_bytes, ble_mtu(), ble_phy(), (unsigned long)ble_kbps(), (unsigned long)ble_drops(),
            (unsigned long)ble_reply_drops(), ble_peers());
   if (full) return s;
   // MTU below ~250 (before the MTU exchange): keep only the fields the app needs to stay alive
-  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
-           millis(), resetReason(), usbState(), net_mode(), apStates[airplay_state()], ble_mtu());
+  snprintf(s, sizeof s, "{\"up\":%lu,\"rst\":\"%s\",\"usb\":\"%s\",\"hid\":\"%s\",\"transport\":\"%s\",\"net\":\"%s\",\"ap\":\"%s\",\"ble\":{\"mtu\":%u}}",
+           millis(), resetReason(), usbState(), hidState(), HID_OVER_BLE ? "ble" : "usb", net_mode(), apStates[airplay_state()], ble_mtu());
   return s;
 }
 
@@ -225,19 +270,30 @@ void setup() {
 #if DEBUG_SERIAL
   for (int i = 0; i < 30 && !Serial; i++) delay(100);  // give a serial monitor 3 s to catch the boot lines
 #endif
+#if WATCHER_BOARD
+  if (!watcher_begin()) {
+    Serial.println("watcher: power controller failed; stopping");
+    for (;;) delay(1000);
+  }
+  receiverName = "Watcher Agent";
+#endif
   mouse.begin();
   keyboard.begin();
   consumer.begin();
+#if !HID_OVER_BLE
   USB.productName("HID Bridge");
   USB.begin();
+#endif
   esp_task_wdt_config_t wdt = {.timeout_ms = WATCHDOG_MS, .idle_core_mask = 0, .trigger_panic = true};
   esp_task_wdt_reconfigure(&wdt);
   esp_task_wdt_add(NULL);
 
   net_begin();
   if (!video_begin()) Serial.println("video: no PSRAM for the GOP buffer");
-  ble_begin("ESP32 Agent " + board_suffix());
+  ble_begin(receiverName + " " + board_suffix());
+#if !HID_TEST_ONLY
   startAirplay();
+#endif
   xTaskCreatePinnedToCore(statusTask, "status", 4096, NULL, 1, NULL, 1);
   Serial.printf("boot %s: free internal heap %u (largest %u), PSRAM %u, reset %s\n", receiverName.c_str(),
                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
@@ -248,7 +304,13 @@ void setup() {
 void loop() {
   static bool linked = false;
   esp_task_wdt_reset();
+#if WATCHER_BOARD
+  watcher_poll();
+#endif
   net_poll();
+#if HID_OVER_BLE
+  ble_hid_poll();
+#endif
   if (linked && !ble_connected()) {
     mouse.release(MOUSE_LEFT);  // a gesture cut off mid-way must not leave the button held (long press)
     keyboard.releaseAll();
@@ -280,3 +342,13 @@ void loop() {
   Serial.printf("%s -> %s (%lu ms)\n", line.c_str(), reply.c_str(), millis() - started);
 #endif
 }
+
+#if WATCHER_BOARD
+void watcher_prepare_sleep() {
+  mouse.release(MOUSE_LEFT);
+  keyboard.releaseAll();
+  consumer.release();
+  video_stream(false);
+  ble_reply("app stop");
+}
+#endif

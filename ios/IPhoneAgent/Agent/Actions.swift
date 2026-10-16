@@ -14,9 +14,9 @@ enum Actions {
     static let actions: [String: [String]] = [
         "tap": ["x", "y"], "swipe": ["x1", "y1", "x2", "y2"], "circle": ["x", "y", "r"], "path": ["points"],
         "type": ["text"], "key": ["combo"], "done": ["answer"], "fail": ["reason"],
-        "home": [], "back": [], "wait": [], "replan": [],
+        "home": [], "back": [], "wait": [], "replan": [], "checkpoint": ["evidence"], "blocked": ["evidence"],
     ]
-    static let textArgs: Set<String> = ["text", "combo", "answer", "reason"]
+    static let textArgs: Set<String> = ["text", "combo", "answer", "reason", "evidence"]
 
     /// One DO line, e.g. "tap 152 362" -> {"action": "tap", "x": 152, "y": 362}.
     static func parseCommand(_ line: String) throws -> JObject {

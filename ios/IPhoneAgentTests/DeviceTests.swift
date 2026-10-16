@@ -157,3 +157,44 @@ import XCTest
         XCTAssertFalse(ProbeFit.usable(0.995))  // stuck at the edge
     }
 }
+
+final class HIDStatusTests: XCTestCase {
+    func testLegacyUSBAndBluetoothReadiness() {
+        let legacy = BoardStatus.decode(Data(#"{"usb":"ok"}"#.utf8))!
+        XCTAssertTrue(legacy.inputReady)
+        let watcher = BoardStatus.decode(Data(#"{"usb":"off","hid":"ok","transport":"ble"}"#.utf8))!
+        XCTAssertTrue(watcher.inputReady)
+        let disconnected = BoardStatus.decode(Data(#"{"usb":"ok","hid":"off","transport":"ble"}"#.utf8))!
+        XCTAssertFalse(disconnected.inputReady)
+        let incomplete = BoardStatus.decode(Data(#"{"usb":"ok","transport":"ble"}"#.utf8))!
+        XCTAssertFalse(incomplete.inputReady)
+    }
+    func testReducedHeartbeatPreservesTransportAndUpdatesHID() {
+        let full = BoardStatus.decode(Data(#"{"usb":"off","hid":"ok","transport":"ble"}"#.utf8))!
+        let partial = BoardStatus.decode(Data(#"{"up":100,"hid":"off"}"#.utf8))!
+        let merged = full.merged(with: partial)
+        XCTAssertEqual(merged.transport, "ble")
+        XCTAssertEqual(merged.usb, "off")
+        XCTAssertFalse(merged.inputReady)
+        XCTAssertTrue(full.merged(with: BoardStatus(up: 101)).inputReady)
+    }
+}
+
+@MainActor final class HIDReconnectTests: XCTestCase {
+    func testForgettingBoardClearsInputReadiness() {
+        let savedPair = UserDefaults.standard.object(forKey: "pairedBoard")
+        defer { UserDefaults.standard.set(savedPair, forKey: "pairedBoard") }
+        let board = BoardLink(mock: true)
+        board.mockConnect(name: "Watcher Agent", net: NetConfig(mode: "off"))
+        board.mockStatus(BoardStatus(usb: "off", hid: "ok", transport: "ble"))
+        XCTAssertTrue(board.status?.inputReady == true)
+        board.forget()
+        XCTAssertNil(board.status)
+        XCTAssertFalse(board.connected)
+        board.mockConnect(name: "USB board", net: NetConfig(mode: "ap"))
+        XCTAssertNil(board.status)
+        board.mockStatus(BoardStatus(usb: "ok"))
+        XCTAssertTrue(board.status?.inputReady == true)
+        XCTAssertNil(board.status?.transport)
+    }
+}
