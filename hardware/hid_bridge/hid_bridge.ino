@@ -171,6 +171,9 @@ String board(const String &line, const String &id) {
   int sp = line.indexOf(' ');
   String cmd = sp < 0 ? line : line.substring(0, sp);
   String arg = sp < 0 ? "" : line.substring(sp + 1);
+#if WATCHER_BOARD
+  if (cmd == "watcher") return watcher_status();
+#endif
   long a = 0, b = 0;
   int n = sscanf(arg.c_str(), "%ld %ld", &a, &b);
   if (cmd == "stream") {
@@ -301,6 +304,9 @@ void setup() {
 void loop() {
   static bool linked = false;
   esp_task_wdt_reset();
+#if WATCHER_BOARD
+  watcher_poll();
+#endif
   net_poll();
 #if HID_OVER_BLE
   ble_hid_poll();
@@ -336,3 +342,13 @@ void loop() {
   Serial.printf("%s -> %s (%lu ms)\n", line.c_str(), reply.c_str(), millis() - started);
 #endif
 }
+
+#if WATCHER_BOARD
+void watcher_prepare_sleep() {
+  mouse.release(MOUSE_LEFT);
+  keyboard.releaseAll();
+  consumer.release();
+  video_stream(false);
+  ble_reply("app stop");
+}
+#endif

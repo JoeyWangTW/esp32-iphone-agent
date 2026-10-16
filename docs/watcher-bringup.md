@@ -24,9 +24,9 @@ hardware/build-watcher.sh             # output: hardware/build-watcher
 
 Set `NIMBLE_LIBRARIES=/path/to/library-parent` to use an isolated NimBLE installation. These commands compile only; they do not choose a serial port or flash a device.
 
-Both profiles use UART serial, 32 MiB flash, octal PSRAM and an 8 MiB application partition layout. The remaining flash is not used. They initialize the Watcher's PCA9535 at address `0x21` (SDA 47, SCL 48) and hold system power on P10. Display, touch, audio amplifier, Himax and expansion power remain off. The power wiring follows Seeed's [board support package](https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware/tree/main/components/sensecap-watcher).
+Both profiles use UART serial, 32 MiB flash, octal PSRAM and an 8 MiB application partition layout. The remaining flash is not used. They initialize the Watcher's PCA9535 at address `0x21` (SDA 47, SCL 48) and hold system power on P10. The status LCD and battery ADC are powered; audio amplifier, Himax and expansion power remain off. The power wiring follows Seeed's [board support package](https://github.com/Seeed-Studio/SenseCAP-Watcher-Firmware/tree/main/components/sensecap-watcher).
 
-The pairing-test profile disables Wi-Fi and AirPlay at startup. The full profile starts the local Wi-Fi AP and AirPlay receiver. Neither profile implements Watcher microphone capture or display UI yet.
+The pairing-test profile disables Wi-Fi and AirPlay at startup. The full profile starts the local Wi-Fi AP and AirPlay receiver. Both have the local status screen and wheel-button controls below. Microphone capture, touch and wheel rotation are not implemented.
 
 Do **not** run the upstream auto-selecting `hardware/flash.sh` on Watcher. Use an explicitly verified ESP32 UART. With `ESPTOOL` set to an esptool 5.1 executable and `ESP32_CORE` to the installed Arduino core directory, the pairing-test upload is:
 
@@ -44,7 +44,7 @@ This replaces the factory bootloader, partition table and ESP32 application. It 
 
 ## Pairing and manual input checks
 
-1. Power Watcher over USB. Its screen stays dark in this prototype.
+1. Power Watcher over USB. Its screen shows connection status.
 2. On iPhone, enable **Settings → Accessibility → Touch → AssistiveTouch**. Under **Devices → Bluetooth Devices**, pair **Watcher Agent** followed by its four-character suffix.
 3. Open **ESP32 Agent**, allow Bluetooth and connect to the same Watcher. The app's Mouse indicator becomes ready only when the encrypted keyboard and mouse report subscriptions are active.
 4. For the initial test, use UART at 115200 baud to send `1 ping`. No mouse movements or typing happen automatically at boot or pairing.
@@ -99,4 +99,17 @@ The app now treats a missing board GOP, decode failure or BLE reconnect as an in
 
 OpenAI-compatible models that reject a custom temperature are retried without that field. Token-limit and temperature negotiation can happen in either order, with at most three attempts and the accepted settings retained for that client. Other errors retain their original failure behavior. This addresses the observed `gpt-6-luna` HTTP 400 without changing the selected model. OpenAI's [parameter guidance](https://developers.openai.com/api/docs/guides/deployment-checklist) also specifies omitting temperature when reasoning effort is not `none`.
 
-Validation: 98 simulator tests passed, including both negotiation orders, unrelated-error behavior, stale-frame rejection and preventing gestures after video loss. Host C tests exercise 10,000 access units through repeated reclamation under AddressSanitizer/UndefinedBehaviorSanitizer. The full Watcher firmware and signed iPhone build compile and are installed; the application-only firmware write passed hash verification and preserved the Bluetooth bond. The live `gpt-6-luna` image test recovered from two HTTP 400 parameter responses, returned HTTP 200, and correctly answered `Red` in 3.7 seconds. Hardware endurance after reclamation and live ride comparison are still pending.
+Validation: 98 simulator tests passed, including both negotiation orders, unrelated-error behavior, stale-frame rejection and preventing gestures after video loss. Host C tests exercise 10,000 access units through repeated reclamation under AddressSanitizer/UndefinedBehaviorSanitizer. The full Watcher firmware and signed iPhone build compile and are installed; the application-only firmware write passed hash verification and preserved the Bluetooth bond. The live `gpt-6-luna` image test recovered from two HTTP 400 parameter responses, returned HTTP 200, and correctly answered `Red` in 3.7 seconds. A live stream reclaimed 4,132,262 bytes and continued decoding at 2.5 fps with frame age 0.1 seconds and no reported drops immediately afterward. Live ride comparison remains unvalidated.
+
+## Local screen and power controls
+
+- Screen: Bluetooth HID readiness, Wi-Fi peer presence, receipt of decodable mirrored data, board suffix and USB/battery power. Battery voltage is approximate; no calibrated percentage is claimed. Mirror reception does not prove that the phone app is decoding or running a task.
+- LED: amber means HID is not ready, blue means HID is ready but Wi-Fi/mirroring is incomplete, green means the board is receiving a buffered mirror stream, red means a long press is armed.
+- Short wheel press: toggle the LCD backlight. Connections and the status LED remain active.
+- Hold the wheel for at least three seconds: display the power action; release to execute. Startup presses and input failures cannot trigger shutdown. HID buttons are released and the companion receives its existing stop command before sleep.
+- USB connected: enter deep-sleep standby with LCD and LED off. Press the wheel to wake; restart iPhone Screen Mirroring afterward. Charger-only interrupts return to sleep. USB power prevents a true hardware shutdown, as described in Seeed's [operation guide](https://wiki.seeedstudio.com/watcher_operation_guideline/).
+- Battery: release the system power latch. Hold the wheel for approximately three seconds to power on, or connect USB. Battery shutdown/wake still needs physical validation.
+
+The 412×412 SPD2010 screen uses Espressif's vendored Apache-2.0 driver over QSPI, a PSRAM framebuffer and a small internal DMA stripe. It refreshes once per second on the bridge loop. Display failures leave the radio bridge available with an LED fallback. The `watcher` diagnostic command reports LCD, backlight, power source and button state without sending phone input.
+
+Host tests cover startup holds, bounce, single/long presses, release-only execution, I2C-loss recovery, timer wrap and framebuffer bounds. The full Watcher, pairing-test and original USB builds pass using NimBLE 2.5.1. The full image is installed with its write hash verified; UART reports LCD ready, USB power and bonded HID/app reconnect, with about 90 KB internal heap and 3 MB PSRAM free at boot. The user verified screen readability, short-press screen off/on, and USB standby/wake. UART confirms the standby request, subsequent boot and bonded HID/app reconnect. Battery shutdown still requires an unplugged physical check.

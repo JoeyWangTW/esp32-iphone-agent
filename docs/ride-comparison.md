@@ -12,6 +12,10 @@ Replace both route placeholders before running this prompt, then save the succes
 
 This generic prompt does not enable the custom controller's OCR action guards or structured fare validation. Supervise the trial and verify the displayed route and quotes. Live comparison remains unvalidated.
 
+### Follow-up: learn a workflow, then reuse it
+
+Saved intents currently retain prompts and hints, not executable scripts. The intended next step is to derive a workflow from a successful supervised run, with pickup/destination as parameters and screen checks between actions. Use local text/visual matching for familiar screens, and ask the model to recover when a checkpoint fails. Avoid blind coordinate playback. Fares, availability and pickup estimates still require a fresh observation each run. Model planning, gesture execution and screen settling are separate latency costs; fewer model calls alone will not remove the latter two.
+
 ## Run it
 
 1. In `ios/Config/Local.xcconfig`, set your development team and a unique bundle identifier, following the example file. Keep model credentials in the app's Settings/Keychain.

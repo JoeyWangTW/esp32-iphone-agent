@@ -2,7 +2,11 @@
 SRC = ../hid_bridge/src
 CFLAGS = -std=c11 -Wall -Wextra -g -fsanitize=address,undefined
 
-all: test hid-descriptor
+all: test hid-descriptor watcher-controls
+
+watcher-controls: test_watcher.cpp ../hid_bridge/watcher_controls.h ../hid_bridge/watcher_screen.h
+	$(CXX) -std=c++17 -Wall -Wextra -g -fsanitize=address,undefined -o watcher_test test_watcher.cpp
+	./watcher_test
 
 hid-descriptor: test_hid_descriptor.cpp ../hid_bridge/hid_report_map.h
 	$(CXX) -std=c++17 -Wall -Wextra -g -fsanitize=address,undefined -o hid_descriptor_test test_hid_descriptor.cpp
@@ -13,6 +17,6 @@ test: test_main.c $(SRC)/bplist/bplist.c $(SRC)/video/gop.c
 	./test
 
 clean:
-	rm -f test hid_descriptor_test
+	rm -f test hid_descriptor_test watcher_test
 
-.PHONY: all clean hid-descriptor
+.PHONY: all clean hid-descriptor watcher-controls
