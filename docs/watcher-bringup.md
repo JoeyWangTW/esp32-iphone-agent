@@ -74,6 +74,19 @@ signed relative axes, and the original bplist/video code. The user confirmed iPh
 confirmed an encrypted/bonded reconnect, all three HID subscriptions, and the iOS
 app's command/status/video subscriptions on the same connection. The test exposed
 and fixed a connection-handle lookup bug (NimBLE peer indices are not handles).
-Mouse notifications are accepted by the BLE host, but the user has not observed a
-pointer; AssistiveTouch visibility and actual movement remain under investigation.
+The user observed the small pointer after toggling AssistiveTouch's **Perform Touch
+Gestures**, then confirmed leftward movement to the top-left edge and movement
+back into view using three `move 100 100` commands. Keyboard typing and relative
+pointer movement are visually confirmed. This observation does not establish that
+the gesture toggle is required on every iPhone. Clicks and coordinate calibration
+remain unverified.
+
+After input verification, the full profile was rebuilt and installed by writing
+only the application at `0x10000`; esptool verified its hash. Startup logs show
+successful `_airplay` and `_raop` registration for **Watcher Agent**, about 105 KB
+free internal heap, and about 3.37 MB free PSRAM. The firmware preserves NVS and
+Bluetooth bonds. The companion's local signing profile lacks the hotspot
+entitlement, so use its displayed network name/password to join manually if the
+automatic Wi-Fi join fails.
+
 Video streaming concurrency and live ride comparison remain unverified.
