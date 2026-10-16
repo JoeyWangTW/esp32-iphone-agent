@@ -53,7 +53,8 @@ void ble_hid_disconnected(uint16_t handle) {
 }
 static bool connected() {
   int h = host;
-  return h >= 0 && hidServer && hidServer->getPeerInfo(h).isEncrypted();
+  // Connection handles are not zero-based peer-list indices (the iPhone used handle 1).
+  return h >= 0 && hidServer && hidServer->getPeerInfoByHandle(h).isEncrypted();
 }
 static bool send(int index, const uint8_t *data, size_t size) {
   int h = host;

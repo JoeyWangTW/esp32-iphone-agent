@@ -397,7 +397,7 @@ bool ble_hid_send(NimBLECharacteristic *report, uint16_t handle, const uint8_t *
   lastCmdMs = millis();
   uint32_t started = millis();
   bool ok = false;
-  while (slotOf(handle) >= 0 && server->getPeerInfo(handle).isEncrypted()) {
+  while (slotOf(handle) >= 0 && server->getPeerInfoByHandle(handle).isEncrypted()) {
     os_mbuf *buf = ble_hs_mbuf_from_flat(data, size);
     int rc = buf ? ble_gatts_notify_custom(handle, report->getHandle(), buf) : BLE_HS_ENOMEM;
     if (rc == 0) { ok = true; break; }
