@@ -16,7 +16,7 @@ struct IPhoneAgentApp: App {
     }
 }
 
-enum AppTab: Hashable { case agent, runs, settings }
+enum AppTab: Hashable { case agent, rides, runs, settings }
 
 /// The setup screens; Home's status chips open the one that fixes a problem.
 enum SetupPage: Int, CaseIterable, Identifiable {
@@ -36,6 +36,9 @@ struct RootView: View {
                      intents: app.intents, recorder: app.recorder)
                 .tabItem { Label("Agent", systemImage: "face.smiling") }
                 .tag(AppTab.agent)
+            RideComparisonView(app: app, rides: app.rides, agent: app.agent)
+                .tabItem { Label("Rides", systemImage: "car.side") }
+                .tag(AppTab.rides)
             RunsView(app: app, runs: app.runs, agent: app.agent)
                 .tabItem { Label("Runs", systemImage: "play.rectangle.on.rectangle") }
                 .tag(AppTab.runs)

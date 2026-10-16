@@ -64,6 +64,9 @@ struct AgentShortcuts: AppShortcutsProvider {
             "Run \(.applicationName) intent \(\.$intent)",
             "Run \(\.$intent) with \(.applicationName)",
         ], shortTitle: "Run Intent", systemImageName: "bolt.fill")
+        AppShortcut(intent: CompareRidesIntent(), phrases: [
+            "Compare rides with \(.applicationName)",
+        ], shortTitle: "Compare rides", systemImageName: "car.side")
         AppShortcut(intent: RunTaskIntent(), phrases: [
             "Ask \(.applicationName) to do something",
             "Give \(.applicationName) a task",
@@ -78,5 +81,20 @@ struct AgentShortcuts: AppShortcutsProvider {
         AppShortcut(intent: CalibrateIntent(), phrases: [
             "Calibrate \(.applicationName)",
         ], shortTitle: "Calibrate", systemImageName: "scope")
+    }
+}
+
+/// Add Dictate Text before this action in Shortcuts, or use Siri to fill the destination.
+struct CompareRidesIntent: AppIntent {
+    static let title: LocalizedStringResource = "Compare Ride Prices"
+    static let description = IntentDescription("Compare Uber, Lyft, and Waymo without requesting a ride.")
+    static let openAppWhenRun = true
+    @Parameter(title: "Pickup address") var pickup: String
+    @Parameter(title: "Destination address") var destination: String
+
+    @MainActor
+    func perform() async throws -> some IntentResult & ProvidesDialog {
+        let line = AppModel.shared.startRideComparison(pickup: pickup, destination: destination)
+        return .result(dialog: "\(line)")
     }
 }

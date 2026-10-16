@@ -87,6 +87,7 @@ extension AppModel {
             return args[i + 1]
         }
         #if DEBUG
+        if args.contains("-rides") { tab = .rides }
         if let requested = value(after: "-setup"),
            let page = ["connect": SetupPage.connect, "brain": .brain][requested] { setupPage = page }
         if args.contains("-test-model") { Task { await pingLLM() } }

@@ -20,6 +20,8 @@ import UIKit
     let traces = MockMode.on
         ? TraceStore(root: FileManager.default.temporaryDirectory.appendingPathComponent("demo-traces"))
         : TraceStore()
+    let rides = RideComparisonController()
+    @Published var rideJob: Task<Void, Never>?
     let intents = IntentStore()
     private(set) lazy var runs = RunStore(traces: traces)
     let pointer: Pointer
