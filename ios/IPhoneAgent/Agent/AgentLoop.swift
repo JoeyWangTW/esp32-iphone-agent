@@ -38,6 +38,7 @@ extension Pointer: Gestures {}
 
     @Published private(set) var task = ""
     @Published private(set) var plan = ""
+    @Published private(set) var memory = RunMemory()
     @Published var steps: [JObject] = []
     @Published private(set) var shots: [Int: Data] = [:]  // step index -> screenshot the model decided on
     private(set) var shotDates: [Int: Date] = [:]
@@ -81,6 +82,7 @@ extension Pointer: Gestures {}
         if running { throw DeviceError(message: "agent already running") }
         guard screen?.live == true else { throw DeviceError(message: "no phone screen: start Screen Mirroring first") }
         self.task = task; plan = ""; steps = []; shots = [:]; shotDates = [:]
+        memory = RunMemory()
         pointerAt = .zero
         lastActed = 0
         helpAsked = 0
@@ -100,6 +102,7 @@ extension Pointer: Gestures {}
     func clear() throws {
         if running { throw DeviceError(message: "stop the agent first") }
         task = ""; plan = ""; steps = []; shots = [:]; shotDates = [:]
+        memory = RunMemory()
     }
 
     private func record(_ shot: Data? = nil, _ step: JObject, capturedAt: Date? = nil) {
@@ -243,7 +246,7 @@ extension Pointer: Gestures {}
 
     /// The actor's system prompt: the original, plus an intent's checklist as hints.
     var actorPrompt: String {
-        let base = Prompts.actor + "\n" + AssistiveTouchSpots.rule
+        let base = Prompts.actor + "\n" + AssistiveTouchSpots.rule + "\n" + RunMemory.actorRules
         return hints.isEmpty ? base : base + "\n\nHints for this task:\n" + hints.map { "- " + $0 }.joined(separator: "\n")
     }
 
@@ -328,7 +331,9 @@ extension Pointer: Gestures {}
             prompt += "\n\nThe previous plan got stuck (last event: \(pyStr(last["action"])) \(last["reason"]?.str ?? "")):"
                 + "\n\(plan)\nLook at the current screen and plan from here, another way if needed."
         }
-        let (reply, seconds, frame, capturedAt) = try await ask("planner", planner, Prompts.plannerApp + "\n" + AssistiveTouchSpots.rule, prompt)
+        prompt += memory.context
+        let (reply, seconds, frame, capturedAt) = try await ask("planner", planner,
+            Prompts.plannerApp + "\n" + AssistiveTouchSpots.rule + "\n" + RunMemory.rules, prompt)
         let (en, zh) = Actions.parsePlan(reply)
         plan = en
         record(frame, ["action": .str(stuck ? "replan (stuck)" : "plan"), "plan": .str(en), "plan_zh": .str(zh),
@@ -344,15 +349,29 @@ extension Pointer: Gestures {}
                 : s["changed"] == .bool(false) ? " -> screen did NOT change" : ""
             return String(PyJSON.dumps(s.without(hidden)).prefix(300)) + effect
         }.joined(separator: "\n")
-        var prompt = "Goal: \(task)\n\nPlan:\n\(plan)\n\nRecent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?"
+        var feedback = ""
         var reply = ""
         for attempt in 0..<3 {  // retry unparseable replies, a little less deterministically
+            let prompt = "Goal: \(task)\n\nPlan:\n\(plan)" + memory.context
+                + "\n\nRecent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?" + feedback
             let (text, seconds, frame, capturedAt) = try await ask("actor", actor, actorPrompt, prompt, temperature: 0.4 * Double(attempt))
+            try Task.checkCancellation()
             reply = text
             var acts: [JObject]
-            do { acts = try Actions.parseActions(text) } catch { continue }
+            do {
+                acts = try Actions.parseActions(text)
+                let updated = try memory.updating(from: text, observedAt: capturedAt)
+                if updated.notes != memory.notes {
+                    memory = updated
+                    // The immediately preceding llm record contains the source screenshot and full reply.
+                    trace?.write(kind: "memory", ["notes": .str(memory.json)])
+                }
+            } catch {
+                feedback = "\n\nReply format error: \(error.localizedDescription). Correct the format; no action was executed."
+                continue
+            }
             if missed, let last = steps.last, Actions.key(acts[0]) == Actions.key(last) {  // same move that did nothing
-                prompt += "\n\nYou just proposed \(PyJSON.dumps(Actions.key(acts[0]))) again, but it changed nothing last "
+                feedback = "\n\nYou just proposed \(PyJSON.dumps(Actions.key(acts[0]))) again, but it changed nothing last "
                     + "time. Choose a different action (another position, a shorter swipe, or another way)."
                 continue
             }

@@ -12,6 +12,12 @@ Replace both route placeholders before running this prompt, then save the succes
 
 This generic prompt does not enable the custom controller's OCR action guards or structured fare validation. Supervise the trial and verify the displayed route and quotes. Live comparison remains unvalidated.
 
+### Working memory during a run
+
+The generic iOS agent now keeps a bounded list of model-observed facts and subtask status (`observed`, `done`, or `pending`). The actor emits `MEMORY:` JSON lines in the same response as its next action; there is no separate summarization call. Notes retain observation timestamps and reach every subsequent actor and planner request, even after the eight-action history window rolls over, a gesture fails, or the connection recovers. Each key can be corrected without losing other results. The model is instructed to verify completion from the screen before marking a subtask done, then continue remaining work.
+
+Memory updates are validated atomically (32 topics, 400 characters per value) and archived in `steps.jsonl` immediately after the model call containing their source screenshot. Invalid notes trigger a format retry before any gesture. Memory resets when starting or clearing a run; it is not restored after an app restart or copied into saved intents. Old fares therefore do not become fresh quotes on the next run. These notes remain model interpretations, not OCR-verified facts, and do not guarantee that the model will avoid every repeated action.
+
 ### Follow-up: learn a workflow, then reuse it
 
 Saved intents currently retain prompts and hints, not executable scripts. The intended next step is to derive a workflow from a successful supervised run, with pickup/destination as parameters and screen checks between actions. Use local text/visual matching for familiar screens, and ask the model to recover when a checkpoint fails. Avoid blind coordinate playback. Fares, availability and pickup estimates still require a fresh observation each run. Model planning, gesture execution and screen settling are separate latency costs; fewer model calls alone will not remove the latter two.

@@ -35,10 +35,10 @@ import XCTest
         agent.hints = ["Type the time instead of scrolling"]
         await agent.run()
         let rule = "\n" + AssistiveTouchSpots.rule
-        XCTAssertEqual(model.systems[0], Prompts.plannerApp + rule)
-        XCTAssertEqual(model.systems[1], Prompts.actor + rule + "\n\nHints for this task:\n- Type the time instead of scrolling")
+        XCTAssertEqual(model.systems[0], Prompts.plannerApp + rule + "\n" + RunMemory.rules)
+        XCTAssertEqual(model.systems[1], Prompts.actor + rule + "\n" + RunMemory.actorRules + "\n\nHints for this task:\n- Type the time instead of scrolling")
         agent.hints = []
-        XCTAssertEqual(agent.actorPrompt, Prompts.actor + rule)
+        XCTAssertEqual(agent.actorPrompt, Prompts.actor + rule + "\n" + RunMemory.actorRules)
     }
 
     func testOptimizerReplyIsParsed() {
