@@ -42,6 +42,7 @@ extension Pointer: Gestures {}
     @Published private(set) var execution = ExecutionPlan()
     private var checkpointActions = 0
     private var checkpointRepairUsed = false
+    private var recoveryStrategy = ""
     @Published var steps: [JObject] = []
     @Published private(set) var shots: [Int: Data] = [:]  // step index -> screenshot the model decided on
     private(set) var shotDates: [Int: Date] = [:]
@@ -86,7 +87,7 @@ extension Pointer: Gestures {}
         guard screen?.live == true else { throw DeviceError(message: "no phone screen: start Screen Mirroring first") }
         self.task = task; plan = ""; steps = []; shots = [:]; shotDates = [:]
         memory = RunMemory()
-        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false
+        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
         pointerAt = .zero
         lastActed = 0
         helpAsked = 0
@@ -107,7 +108,7 @@ extension Pointer: Gestures {}
         if running { throw DeviceError(message: "stop the agent first") }
         task = ""; plan = ""; steps = []; shots = [:]; shotDates = [:]
         memory = RunMemory()
-        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false
+        execution = ExecutionPlan(); checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
     }
 
     private func record(_ shot: Data? = nil, _ step: JObject, capturedAt: Date? = nil) {
@@ -285,7 +286,7 @@ extension Pointer: Gestures {}
                 let title = execution.current?.goal ?? ""
                 try execution.advance(evidence: act["evidence"]?.str ?? "", blocked: name == "blocked")
                 act["checkpoint_goal"] = .str(title)
-                checkpointActions = 0; checkpointRepairUsed = false
+                checkpointActions = 0; checkpointRepairUsed = false; recoveryStrategy = ""
                 record(planned.shot, act, capturedAt: planned.capturedAt)
                 return false
             }
@@ -377,7 +378,7 @@ extension Pointer: Gestures {}
                     continue
                 }
                 plan = execution.checkpoints.enumerated().map { "\($0.offset + 1). \($0.element.goal)" }.joined(separator: "\n")
-            } else { plan = en }
+            } else { plan = en; recoveryStrategy = en }
             record(frame, ["action": .str(stuck ? "replan (stuck)" : "plan"), "plan": .str(plan), "plan_zh": .str(zh),
                            "think_s": .num(seconds)], capturedAt: capturedAt)
             return
@@ -396,7 +397,7 @@ extension Pointer: Gestures {}
         var feedback = ""
         var reply = ""
         for attempt in 0..<3 {  // retry unparseable replies, a little less deterministically
-            let prompt = "Goal: \(task)\n\nPlan / current recovery strategy:\n\(plan)" + memory.context + execution.context
+            let prompt = "Overall goal (context, not a request to restart): \(task)\n\nCurrent recovery guidance:\n\(recoveryStrategy.isEmpty ? "(none)" : recoveryStrategy)" + memory.context + execution.context
                 + "\n\nRecent actions:\n\(history.isEmpty ? "(none)" : history)\n\nNext action?" + feedback
             let (text, seconds, frame, capturedAt) = try await ask("actor", actor, actorPrompt, prompt, temperature: 0.4 * Double(attempt))
             try Task.checkCancellation()

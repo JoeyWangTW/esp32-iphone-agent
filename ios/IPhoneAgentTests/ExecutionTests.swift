@@ -79,6 +79,21 @@ import XCTest
         XCTAssertTrue(agent.execution.checkpoints.isEmpty)
     }
 
+    func testActorSeesOnlyCurrentCriteriaAndRecoveryDoesNotLeakToNextCheckpoint() async throws {
+        let actor = FakeModel { _ in "DO: checkpoint Lyft screen visible" }
+        let planner = FakeModel { [plan] n in n == 1 ? plan : "REPAIR_OPEN_LYFT_ONLY" }
+        let agent = AgentLoop(phone: FakeGestures(), screen: FakeScreen(), actor: actor, planner: planner, trace: nil)
+        try await agent.replan()
+        try await agent.replan(stuck: true)
+        _ = try await agent.step()
+        XCTAssertTrue(actor.prompts[0].contains("REPAIR_OPEN_LYFT_ONLY"))
+        XCTAssertTrue(actor.prompts[0].contains("Required evidence: Lyft screen visible"))
+        XCTAssertFalse(actor.prompts[0].contains("Fare and option recorded"))
+        _ = try await agent.nextActions()
+        XCTAssertFalse(actor.prompts[1].contains("REPAIR_OPEN_LYFT_ONLY"))
+        XCTAssertTrue(actor.prompts[1].contains("Required evidence: Requested route visible"))
+    }
+
     func testCheckpointActionBudgetStopsRepeatedUnproductiveNavigation() async throws {
         let actor = FakeModel { n in "DO: tap \(n) \(n)" }
         let planner = FakeModel { n in n == 1 ? "1. Open the app" : "Try a different route through Search" }

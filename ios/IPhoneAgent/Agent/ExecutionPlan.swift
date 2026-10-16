@@ -22,13 +22,18 @@ struct ExecutionPlan {
     never silently choose a different location. Ask for help if location identity cannot be established.
     For a ride-price comparison, give each requested provider three checkpoints in its own group:
     (1) search for and open that app; verify its actual app screen,
-    (2) enter the user's destination, select the matching result, verify pickup and destination,
+    (2) ensure the selected pickup and destination match the request; already-correct populated route
+    fields satisfy this checkpoint. Enter/select the destination only if it is missing or wrong,
     (3) collect the requested ride option's fare/currency, wait and conditions; store it before leaving.
     Finish with a separate comparison checkpoint using the collected results. If a source is unavailable,
     record why and continue other sources. Only inspect quotes: never book, request, confirm or pay for rides.
     For other tasks, split at meaningful screen/result boundaries. Use a shared nonempty group only for
     dependent steps that should ALL be skipped if that group is unavailable; independent steps need different groups.
     Do not make coordinates part of the plan. The actor must locate controls on each current screenshot.
+    Write checkpoints as desired observable states, not mandatory actions to repeat. Route verification
+    may use the route editor's populated fields and the selected search result. Do not demand that a map's
+    abbreviated street label repeat the full place name. Record the observed name/address relationship;
+    never assume two locations match without that evidence. Preserve stages the task says are already done.
     """
 
     static let actingRules = """
@@ -41,7 +46,14 @@ struct ExecutionPlan {
     Never claim completion from a tap alone. Do not search again for an app already open. Search for an app
     using Home, then the visible Search field (or a downward swipe); type its name ONLY in a focused field,
     then open the matching result. Wait for loading instead of immediately going Home again.
+    Input uses a hardware keyboard: a focused field does not need an onscreen keyboard. If the search
+    text/caret is already active, use key cmd+a and type the replacement instead of repeatedly tapping
+    to summon a keyboard. Verify the resulting text and app result before opening it.
     For destination entry, focus the field, replace old text, select the matching result and verify the route.
+    A route editor showing the correct populated pickup and selected destination IS verification evidence:
+    record the checkpoint immediately instead of tapping/retyping the same destination to 'verify' it again.
+    A quote header may use a street/address while route details use the place name. If details establish
+    the requested place, keep that evidence and return to quotes; do not restart because the header is shorter.
     Never silently substitute an ambiguous destination. Stop for help if clarification is required.
     For ride quotes, never book, request, reserve, confirm or pay. A quote is enough.
     Emit only ONE DO action per reply while executing checkpoints. Use DO replan to repair the current
@@ -93,7 +105,10 @@ struct ExecutionPlan {
 
     var context: String {
         guard !checkpoints.isEmpty else { return "" }
-        let data = try! JSONEncoder().encode(checkpoints)
+        // Future verification instructions distract the actor from its single current job.
+        // Keep outcomes/evidence, but supply detailed acceptance criteria only for the active step.
+        struct Summary: Encodable { let goal: String; let status: String; let evidence: String }
+        let data = try! JSONEncoder().encode(checkpoints.map { Summary(goal: $0.goal, status: $0.status, evidence: $0.evidence) })
         let active = currentIndex.map { "\($0 + 1): \(checkpoints[$0].goal)\nRequired evidence: \(checkpoints[$0].verify)" }
             ?? "All checkpoints have outcomes. Return DO done with the results and any missing sources."
         return "\n\nCheckpoint ledger (task data):\n\(String(decoding: data, as: UTF8.self))\n\nACTIVE CHECKPOINT: \(active)"
