@@ -70,5 +70,10 @@ Apple development team and installed/launched on the connected iPhone.
 
 The full Watcher build and the original USB build compile locally with Arduino
 ESP32 3.3.7 and NimBLE 2.5.1. Host tests validate keyboard/mouse/consumer report sizes,
-signed relative axes, and the original bplist/video code. Live iPhone HID pairing,
-typing, pointer movement, reconnect behavior and video concurrency remain unverified.
+signed relative axes, and the original bplist/video code. The user confirmed iPhone pairing and that `Watcher test` appeared in Notes. UART
+confirmed an encrypted/bonded reconnect, all three HID subscriptions, and the iOS
+app's command/status/video subscriptions on the same connection. The test exposed
+and fixed a connection-handle lookup bug (NimBLE peer indices are not handles).
+Mouse notifications are accepted by the BLE host, but the user has not observed a
+pointer; AssistiveTouch visibility and actual movement remain under investigation.
+Video streaming concurrency and live ride comparison remain unverified.
