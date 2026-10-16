@@ -118,7 +118,7 @@ import UIKit
             guard let self else { return }
             feed.resetStream()
             metrics.mtu = board.mtu
-            if agent.running && !MockMode.on && FrameMode.current == .stream {  // the board forgot `stream on`: the paused run needs the screen back
+            if !MockMode.on && FrameMode.current == .stream {  // keep decoder history valid between tasks too
                 Task { [weak self] in
                     do { try await self?.feed.stream(true); DebugLog.write("recover: BLE back, stream on again") } catch {
                         DebugLog.write("recover: stream on after reconnect failed: \(error.localizedDescription)")
@@ -180,18 +180,16 @@ import UIKit
         }
     }
 
-    /// A command timed out: video may be starving the board's control traffic. Stop the stream and run
-    /// snap-per-step for the rest of this run (the next run streams again).
+    /// A command timeout does not imply the decoder can restart from the board's finite history.
+    /// Preserve live delivery and let the normal command/recovery path handle the failure.
     private func commandTimedOut(_ command: String) async {
-        DebugLog.write("cmd timeout on '\(command.prefix(30))': stream off, snap-per-step for this run")
-        FrameMode.fallback = .snap
-        if feed.streamOn { _ = try? await feed.stream(false) }
+        DebugLog.write("cmd timeout on '\(command.prefix(30))': retaining live video for recovery")
     }
 
     func setFrameMode(_ mode: FrameMode) {
         FrameMode.current = mode
         say("frame mode: \(mode.rawValue)")
-        if mode == .stream && agent.running { Task { try? await feed.stream(true) } }
+        if mode == .stream && board.connected { Task { try? await feed.stream(true) } }
         if mode == .snap && feed.streamOn { Task { try? await feed.stream(false) } }
     }
 
@@ -323,7 +321,7 @@ import UIKit
             catch { failed += 1 }
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
-        try? await feed.stream(false)
+        try? await feed.finishUse()
         decodedBefore = metrics.decodeErrors - decodedBefore
         say("background test: LLM \(ok) ok / \(failed) failed, decode errors \(decodedBefore), "
             + "suspensions \(metrics.suspensions), background alive \(Int(metrics.backgroundAlive)) s")

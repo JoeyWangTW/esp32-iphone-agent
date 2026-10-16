@@ -17,7 +17,7 @@ import UIKit
 enum FrameMode: String {
     case stream, snap
     static let key = "frameModeV2"  // V2: drops the old saved "snap" left by earlier automatic fallbacks
-    /// A command timeout switches the current run to snap; not saved, so the next run streams again.
+    /// Optional per-run diagnostic override; command timeouts no longer silently switch to snap.
     static var fallback: FrameMode?
     static var current: FrameMode {
         get { fallback ?? FrameMode(rawValue: UserDefaults.standard.string(forKey: key) ?? "") ?? .stream }
@@ -139,14 +139,15 @@ extension ScreenSource {
         return max(8, gopBytes * 8 / 1000 / kbps * 2 + 3)
     }
 
-    /// A current frame for the model. While the board streams, the live stream has it (an IDR comes every
-    /// ~2 s): use a frame younger than `maxAge`, or wait for the next one. Snap only as a fallback, retried
-    /// once with a longer timeout. Returns where the frame came from, for the log.
+    /// A still screen may have no new frames and an IDR may be minutes apart. Keep the healthy decoder
+    /// alive between runs; replaying a truncated board GOP as a snapshot cannot repair it.
     @discardableResult
     func currentFrame(maxAge: Double = 1, wait: Double = 3) async throws -> String {
         if streamOn && mirroring {
             if live && now() - updated < maxAge { return "live" }
             if await fresh(since: now() - maxAge, timeout: wait) != nil && live { return "live (waited)" }
+            if live { return "live (unchanged screen)" }
+            throw DeviceError(message: "Mirroring is connected but no decodable live frame arrived. Wait for video recovery; if it persists, restart Screen Mirroring.")
         }
         do {
             try await snap()
@@ -179,9 +180,15 @@ extension ScreenSource {
         streamOn = on
     }
 
+    /// Ending a task must not pause H.264 delivery: AirPlay keeps producing dependent frames and the
+    /// board's finite history would overflow. Explicit snap mode still opts out of continuous video.
+    func finishUse(mode: FrameMode = FrameMode.current) async throws {
+        if mode == .snap && streamOn { try await stream(false) }
+    }
+
     /// The model must never see a frame from before the action that ended at `since`. Stream: let the screen
     /// settle, then wait (bounded) for a frame captured after the action; none while the stream is healthy means
-    /// the screen did not change, but a broken stream (waiting for an IDR) needs a snap. Snap: give the UI a moment,
+    /// the screen did not change; a broken stream must recover before acting. Snap: give the UI a moment,
     /// snap, and snap once more if the GOP still ends before the action.
     func afterAction(since: Double) async {
         do {
@@ -196,8 +203,7 @@ extension ScreenSource {
                 await settled()
                 if await newer(than: since, timeout: 1.5) { return }
                 guard !live || !streamOn else { return DebugLog.write("frame: none after the action; screen unchanged") }
-                DebugLog.write("frame: stream stale (waiting for an IDR); snapping")
-                try await snap()
+                DebugLog.write("frame: live stream broken; waiting for a decodable frame, not replaying expired board history")
             }
         } catch {
             DebugLog.write("frame after action failed: \(error.localizedDescription)")

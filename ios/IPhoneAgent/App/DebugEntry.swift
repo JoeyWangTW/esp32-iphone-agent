@@ -75,7 +75,8 @@ extension AppModel {
         let cal = pointer.span.map { "\($0.w)x\($0.h) " + (pointer.quality.map { String(format: "±%.1f%%", $0 * 100) } ?? "?") }
             ?? "none"
         let model = settings.isConfigured ? (settings.currentModel ?? "auto") : "not set"
-        let run = agent.running ? "running step \(agent.steps.count)" : "idle"
+        let checkpoint = agent.execution.currentIndex.map { "; checkpoint \($0 + 1)/\(agent.execution.checkpoints.count) \(agent.execution.checkpoints[$0].goal)" } ?? ""
+        let run = agent.running ? "running step \(agent.steps.count)\(checkpoint)" : "idle"
         return "status: frames \(FrameMode.current.rawValue); board \(boardText); mirroring \(mirror); calibration \(cal) (\(calibrator.phase)); "
             + "model \(model); run \(run); screen \(Int(DeviceScreen.size.width))x\(Int(DeviceScreen.size.height)); "
             + "video \(s?.fps ?? 0) fps \(s?.kbps ?? 0) kbps gop \(s?.gop ?? 0) bytes"

@@ -183,6 +183,18 @@ struct HomeView: View {
                 }
             }
             .padding(.vertical, Space.xs)
+            if !agent.execution.checkpoints.isEmpty {
+                DisclosureGroup("Plan and progress") {
+                    ForEach(Array(agent.execution.checkpoints.enumerated()), id: \.offset) { i, checkpoint in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Label(checkpoint.goal, systemImage: checkpoint.status == "done" ? "checkmark.circle.fill"
+                                  : checkpoint.status == "blocked" ? "exclamationmark.circle" : i == agent.execution.currentIndex ? "arrow.right.circle.fill" : "circle")
+                            Text(checkpoint.evidence.isEmpty ? checkpoint.verify : checkpoint.evidence)
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
         } header: {
             Text(agent.running ? "Now" : "Last run")
         }

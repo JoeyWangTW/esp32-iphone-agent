@@ -361,6 +361,6 @@ import XCTest
     func chat(system: String, text: String, image: Data?, maxTokens: Int, temperature: Double) async throws -> ChatResult {
         onProgress?(.waiting)
         onProgress?(.receiving)
-        return ChatResult(text: "THINK: Wait for the screen\nDO: wait", total: 0)
+        return ChatResult(text: text.contains("Initial task plan:") ? "1. Observe the screen" : "THINK: Wait for the screen\nDO: wait", total: 0)
     }
 }
